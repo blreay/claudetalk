@@ -78,6 +78,9 @@ claudetalk --setup
 
 # 查看帮助
 claudetalk --help
+
+# 全局卸载
+npm uninstall -g claudetalk
 ```
 
 ### 通过环境变量配置（优先级高于配置文件）
