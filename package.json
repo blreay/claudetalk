@@ -1,0 +1,36 @@
+{
+  "name": "claude-code-dingtalk-channel",
+  "version": "0.1.0",
+  "description": "A DingTalk channel plugin for Claude Code",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "dingtalk-channel": "dist/index.js"
+  },
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target node",
+    "dev": "bun run ./src/index.ts",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src/",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "claude-code",
+    "dingtalk",
+    "channel",
+    "mcp"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/suyin58/claude-code-dingtalk-channel.git"
+  }
+}

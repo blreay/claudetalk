@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "dingtalk": {
+      "command": "bun run src/index.ts`
+    }
+  }
+}
