@@ -10,9 +10,10 @@
 ```bash
 # 安装 Claude Code CLI（如果还没装）
 npm install -g @anthropic-ai/claude-code
-```
 
-3. **钉钉机器人应用**：在 [钉钉开放平台](https://open-dev.dingtalk.com) 创建一个企业内部应用，启用机器人能力，获取 AppKey 和 AppSecret
+# 配置其他大模型可以参考glm的文档
+https://docs.bigmodel.cn/cn/coding-plan/tool/claude
+```
 
 ## 安装
 
@@ -60,6 +61,11 @@ claudetalk
 ✅ 配置已保存到 ~/.claudetalk/claudetalk.json
 ```
 
+####  **钉钉机器人应用**：在 [钉钉开放平台](https://open-dev.dingtalk.com) 创建一个企业内部应用，启用机器人能力，获取 AppKey 和 AppSecret
+创建机器人应用
+![创建机器人应用](https://down-cdn.dingtalk.com/ddmedia/iwElAqNwbmcDBgTRDRgF0QXYBrAR0RuG801avgmWW_KAsaIAB9IB61N7CAAJqm9wZW4udG9vbHMKAAvSABO97g.png)
+开启机器人功能
+![alt text](https://down-cdn.dingtalk.com/ddmedia/iwELAqNwbmcDBgTRC4QF0QZoBrB4hMu8Zv-y7wmWXMLES2oAB9IB61N7CAAJqm9wZW4udG9vbHMKAAvSABb4qA.png)
 配置完成后会自动启动机器人，在钉钉里给机器人发消息即可开始对话。
 
 ### 日常使用
@@ -69,6 +75,7 @@ claudetalk
 cd /path/to/your/project
 claudetalk
 ```
+
 
 ### 其他命令
 
