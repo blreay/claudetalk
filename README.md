@@ -66,7 +66,7 @@ claudetalk
 ![创建机器人应用](https://down-cdn.dingtalk.com/ddmedia/iwELAqNwbmcDBgTRDW4F0QWcBrCGJnmU7-17zQmWXqczAm8AB9IB61N7CAAJqm9wZW4udG9vbHMKAAvSABBoig.png)
 开启机器人功能
 ![开启机器人功能](https://down-cdn.dingtalk.com/ddmedia/iwELAqNwbmcDBgTRC4QF0QZoBrB4hMu8Zv-y7wmWXMLES2oAB9IB61N7CAAJqm9wZW4udG9vbHMKAAvSABb4qA.png)
-配置完成后会自动启动机器人，在钉钉里给机器人发消息即可开始对话。
+配置完成后,需要在左侧菜单最后一项【版本管理和发布】，发布后，会自动启动机器人，在钉钉里给机器人发消息即可开始对话。
 
 ### 日常使用
 
