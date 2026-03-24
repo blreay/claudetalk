@@ -3,3 +3,4 @@
 .D.tsconfig.json
 node_modules/
 dist/
+.claude/
