@@ -471,7 +471,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
         await fetch(callback.sessionWebhook, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ msgtype: 'text', text: { content: replyContent } }),
+          body: JSON.stringify({ msgtype: 'markdown', markdown: { title: '会话', text: replyContent } }),
         })
       }
       return
@@ -503,7 +503,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
         await fetch(callback.sessionWebhook, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ msgtype: 'text', text: { content: '👍 收到，正在处理...' } }),
+          body: JSON.stringify({ msgtype: 'markdown', markdown: { title: '确认', text: '👍 收到，正在处理...' } }),
         }).catch((error) => log(`[reply] Failed to send ack: ${error}`))
       }
 
@@ -541,8 +541,8 @@ export async function startBot(options: StartBotOptions): Promise<void> {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            msgtype: 'text',
-            text: { content: `处理消息时出错: ${error instanceof Error ? error.message : String(error)}` },
+            msgtype: 'markdown',
+            markdown: { title: '错误', text: `处理消息时出错: ${error instanceof Error ? error.message : String(error)}` },
           }),
         }).catch(() => {})
       }
