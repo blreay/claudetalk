@@ -192,10 +192,43 @@ function loadConfig(workDir: string, profile?: string): any | null {
   return null
 }
 /**
+ * 根据 profile 配置构建 --agents 参数的 JSON 字符串
+ * Claude Code 通过 --agents 参数接收 SubAgent 定义，格式为 JSON 对象
+ * 参考：https://code.claude.com/docs/en/sub-agents#cli-defined-subagents
+ */
+function buildAgentJson(profileName: string, config: any): string | null {
+  if (!config) return null
+
+  const agentDef: Record<string, unknown> = {
+    description: config.systemPrompt
+      ? `${profileName} 角色助手。${config.systemPrompt}`
+      : `${profileName} 角色助手，负责相关工作。`,
+    prompt: config.systemPrompt || `你是 ${profileName} 角色，负责相关工作。`,
+  }
+
+  if (config.subagentModel) {
+    agentDef.model = config.subagentModel
+  }
+
+  if (config.subagentPermissions?.allow || config.subagentPermissions?.deny) {
+    agentDef.tools = config.subagentPermissions.allow ?? []
+    if (config.subagentPermissions.deny?.length) {
+      agentDef.disallowedTools = config.subagentPermissions.deny
+    }
+  }
+
+  try {
+    return JSON.stringify({ [profileName]: agentDef })
+  } catch {
+    return null
+  }
+}
+
+/**
  * 调用 claude -p CLI 处理消息
  * 如果有已存在的 session_id，则用 --resume 继续会话
  * 新建 session 时：
- * - 有 profile 且启用了 SubAgent：不传 systemPrompt，Claude Code 会自动从 .claude/agents/<profile>.md 加载
+ * - 有 profile 且启用了 SubAgent：通过 --agents 传入 SubAgent 定义，Claude Code 自动委托
  * - 有 profile 但未启用 SubAgent：通过 --append-system-prompt 传入角色信息
  * - 无 profile（默认角色）：使用自动委托，不传 systemPrompt
  */
@@ -230,13 +263,25 @@ async function callClaude(
     }
 
     // 配置未变化，恢复已有 session
+    // 恢复 session 时也需要传入 --agents，否则 Claude Code 找不到对应的 SubAgent 定义
+    if (profile && currentSubagentEnabled) {
+      const agentJson = buildAgentJson(profile, currentConfig)
+      if (agentJson) {
+        args.push('--agents', agentJson)
+      }
+    }
     args.push('--resume', existingSessionId)
   } else {
     // 新建 session：
-    // - 有 profile 且启用 SubAgent：不传 systemPrompt，Claude Code 自动从 .claude/agents/<profile>.md 加载
+    // - 有 profile 且启用 SubAgent：通过 --agents 传入 SubAgent 定义，Claude Code 自动委托给对应 SubAgent
     // - 有 profile 但未启用 SubAgent：通过 --append-system-prompt 传入角色信息
-    // - 无 profile（默认角色）：使用自动委托，不传 systemPrompt
-    if (profile && !currentSubagentEnabled && currentSystemPrompt) {
+    // - 无 profile（默认角色）：使用自动委托，不传任何额外参数
+    if (profile && currentSubagentEnabled) {
+      const agentJson = buildAgentJson(profile, currentConfig)
+      if (agentJson) {
+        args.push('--agents', agentJson)
+      }
+    } else if (profile && !currentSubagentEnabled && currentSystemPrompt) {
       args.push('--append-system-prompt', currentSystemPrompt)
     }
   }
