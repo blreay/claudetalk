@@ -4,8 +4,11 @@
  */
 
 // 导出触发各 Channel 的自注册（registerChannel 调用在各文件末尾）
+// 导出触发各 Channel 的自注册（registerChannel 调用在各文件末尾）
 export * from './dingtalk.js'
-export * from './discord.js'
+export * from './feishu.js'
+// 新增 Channel 示例：
+// export * from './wechat.js'
 // 新增 Channel 示例：
 // export * from './wechat.js'
 

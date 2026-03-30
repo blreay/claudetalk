@@ -283,6 +283,30 @@ export interface DingTalkProfileConfig {
   DINGTALK_CLIENT_SECRET: string
 }
 
+/** 飞书 Channel 内部配置 */
+export interface FeishuChannelConfig {
+  /** 飞书应用 App ID */
+  appId: string
+  /** 飞书应用 App Secret */
+  appSecret: string
+  /** 私聊策略: open | allowlist */
+  dmPolicy?: 'open' | 'allowlist'
+  /** 群聊策略: at_only | open | allowlist | disabled */
+  groupPolicy?: 'at_only' | 'open' | 'allowlist' | 'disabled'
+  /** 允许的发送者 open_id 列表（私聊白名单） */
+  allowFrom?: string[]
+  /** 群聊发送者白名单 */
+  groupAllowFrom?: string[]
+  /** 消息类型: text | post */
+  messageType?: 'text' | 'post'
+}
+
+/** 飞书 Channel 专属配置 */
+export interface FeishuProfileConfig {
+  FEISHU_APP_ID: string
+  FEISHU_APP_SECRET: string
+}
+
 /** Discord Channel 专属配置 */
 export interface DiscordProfileConfig {
   /** Bot Token */
@@ -299,6 +323,8 @@ export interface ProfileConfig {
   channel: ChannelType
   /** 钉钉配置 */
   dingtalk?: DingTalkProfileConfig
+  /** 飞书配置 */
+  feishu?: FeishuProfileConfig
   /** Discord 配置 */
   discord?: DiscordProfileConfig
   /** 角色系统提示词 */
