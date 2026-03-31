@@ -1,17 +1,24 @@
 /**
  * Claude Code Feishu Channel - 飞书 API 客户端
  *
- * 使用飞书开放平台 WebSocket 长连接接收消息（类似钉钉 Stream）
- * 需要在飞书开放平台开启"使用长连接接收事件"
+ * 使用飞书官方 SDK (@larksuiteoapi/node-sdk) 的 WSClient 建立 WebSocket 长连接
+ * 需要在飞书开放平台开启"使用长连接接收事件"并订阅 im.message.receive_v1 事件
  * 文档: https://open.feishu.cn/document/server-docs/im-v1/message/create
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+import * as Lark from '@larksuiteoapi/node-sdk';
 import type {
   Channel,
   ChannelMessageContext,
   FeishuChannelConfig,
 } from '../types.js';
 import { registerChannel } from './registry.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const FEISHU_API_BASE = 'https://open.feishu.cn/open-apis';
 
@@ -35,62 +42,36 @@ interface FeishuBotInfoResponse {
   };
 }
 
-interface FeishuWsEndpointResponse {
-  code: number;
-  msg: string;
-  data: {
-    url: string;
-  };
-}
-
-// 飞书 WebSocket 长连接帧
-interface FeishuWsFrame {
-  // type=0: 握手确认, type=1: 心跳 pong, type=2: 业务消息
-  type: number;
-  headers?: Record<string, string>;
-  payload?: string;
-}
-
-// 飞书消息事件 payload
+// 飞书 SDK im.message.receive_v1 回调的事件数据结构
+// SDK 已路由好事件类型，data 直接是 { sender, message }，不含 header/event 包装层
 interface FeishuMessageEvent {
-  schema: string;
-  header: {
-    event_id: string;
-    event_type: string;
-    create_time: string;
-    token: string;
-    app_id: string;
-    tenant_key: string;
+  sender: {
+    sender_id: {
+      user_id: string;
+      union_id: string;
+      open_id: string;
+    };
+    sender_type: string;
   };
-  event: {
-    sender: {
-      sender_id: {
+  message: {
+    message_id: string;
+    root_id?: string;
+    parent_id?: string;
+    create_time: string;
+    chat_id: string;
+    chat_type: 'p2p' | 'group';
+    message_type: string;
+    content: string;
+    mentions?: Array<{
+      key: string;
+      id: {
         user_id: string;
         union_id: string;
         open_id: string;
       };
-      sender_type: string;
-    };
-    message: {
-      message_id: string;
-      root_id?: string;
-      parent_id?: string;
-      create_time: string;
-      chat_id: string;
-      chat_type: 'p2p' | 'group';
-      message_type: string;
-      content: string;
-      mentions?: Array<{
-        key: string;
-        id: {
-          user_id: string;
-          union_id: string;
-          open_id: string;
-        };
-        name: string;
-        tenant_key: string;
-      }>;
-    };
+      name: string;
+      tenant_key: string;
+    }>;
   };
 }
 
@@ -119,11 +100,10 @@ export class FeishuClient implements Channel {
   private tokenCache: { accessToken: string; expiresAt: number } | null = null;
   private botOpenId: string | null = null;
   private channelMessageHandler: ((context: ChannelMessageContext, message: string) => Promise<void>) | null = null;
-  private ws: WebSocket | null = null;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private isManuallyClosed: boolean = false;
-  private reconnectDelayMs: number = 3000;
+  private wsClient: Lark.WSClient | null = null;
+  // 消息去重缓存：message_id -> timestamp
+  private processedMessageIds = new Map<string, number>();
+  private readonly DEDUP_TTL_MS = 30000; // 30秒内的重复消息忽略
 
   constructor(config: FeishuChannelConfig) {
     this.config = config;
@@ -207,32 +187,10 @@ export class FeishuClient implements Channel {
     return this.botOpenId;
   }
 
-  /**
-   * 获取 WebSocket 长连接端点 URL
-   */
-  private async fetchWsEndpoint(): Promise<string> {
-    const accessToken = await this.getAccessToken();
-
-    const response = await fetch(`${FEISHU_API_BASE}/api/v1/ws/endpoint`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ app_id: this.config.appId }),
-    });
-
-    const data = (await response.json()) as FeishuWsEndpointResponse;
-
-    if (data.code !== 0) {
-      throw new Error(`Failed to get feishu ws endpoint: ${data.msg}`);
-    }
-
-    return data.data.url;
-  }
 
   /**
    * 启动 WebSocket 长连接，开始接收飞书消息
+   * 使用飞书官方 SDK WSClient，内部自动处理认证、心跳、重连
    */
   async start(): Promise<void> {
     if (!this.config.appId || !this.config.appSecret) {
@@ -249,166 +207,69 @@ export class FeishuClient implements Channel {
     // 预先获取机器人 open_id，用于群聊 @ 检测
     await this.fetchBotOpenId();
 
-    this.isManuallyClosed = false;
-    this.reconnectDelayMs = 3000;
+    // 创建事件分发器，注册消息处理器
+    const eventDispatcher = new Lark.EventDispatcher({});
+    eventDispatcher.register({
+      'im.message.receive_v1': async (data) => {
+        try {
+          // SDK 已解析好事件数据，直接转为内部类型处理
+          await this.handleMessageEvent(data as unknown as FeishuMessageEvent);
+        } catch (error) {
+          console.error(`[feishu] Failed to handle message event: ${error}`);
+        }
+      },
+    });
 
-    await this.connectWs();
+    // 创建 WSClient，使用官方 SDK 建立长连接（自动处理认证、心跳、重连）
+    this.wsClient = new Lark.WSClient({
+      appId: this.config.appId,
+      appSecret: this.config.appSecret,
+      loggerLevel: Lark.LoggerLevel.info,
+    });
+
+    return new Promise((resolve, reject) => {
+      try {
+        this.wsClient!.start({ eventDispatcher });
+        console.error('[feishu] WebSocket client started');
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
   }
 
   /**
    * 停止 WebSocket 连接
    */
   stop(): void {
-    this.isManuallyClosed = true;
-
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-
+    this.wsClient = null;
     console.error('[feishu] WebSocket stopped');
   }
 
   /**
-   * 建立 WebSocket 长连接
-   */
-  private async connectWs(): Promise<void> {
-    const wsUrl = await this.fetchWsEndpoint();
-    console.error(`[feishu] Connecting to endpoint: ${wsUrl.substring(0, 60)}...`);
-
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
-      this.ws = ws;
-
-      ws.onopen = () => {
-        console.error('[feishu] WebSocket connected');
-        this.reconnectDelayMs = 3000;
-
-        // 每 30 秒发送心跳，保持连接活跃
-        this.heartbeatTimer = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 1 }));
-          }
-        }, 30000);
-
-        resolve();
-      };
-
-      ws.onmessage = async (event) => {
-        try {
-          const frame = JSON.parse(event.data as string) as FeishuWsFrame;
-          await this.handleWsFrame(ws, frame);
-        } catch (error) {
-          console.error(`[feishu] Failed to handle ws frame: ${error}`);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error(`[feishu] WebSocket error:`, error);
-      };
-
-      ws.onclose = (event) => {
-        console.error(`[feishu] WebSocket disconnected: code=${event.code}, reason=${event.reason}`);
-        this.ws = null;
-
-        if (this.heartbeatTimer) {
-          clearInterval(this.heartbeatTimer);
-          this.heartbeatTimer = null;
-        }
-
-        if (!this.isManuallyClosed) {
-          this.reconnectDelayMs = 3000;
-          console.error(`[feishu] Scheduling reconnect in ${this.reconnectDelayMs}ms...`);
-          this.reconnectTimer = setTimeout(() => {
-            this.startReconnectLoop();
-          }, this.reconnectDelayMs);
-        }
-      };
-    });
-  }
-
-  /**
-   * 启动重连循环，持续重连直到成功或手动停止
-   */
-  private startReconnectLoop(): void {
-    const attemptReconnect = async (): Promise<void> => {
-      try {
-        console.error(`[feishu] Attempting to reconnect...`);
-        await this.connectWs();
-        console.error(`[feishu] Reconnected successfully`);
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[feishu] Reconnect failed: ${errorMessage}`);
-
-        // 指数退避，最大 60 秒
-        this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 60000);
-
-        if (!this.isManuallyClosed) {
-          console.error(`[feishu] Will retry in ${this.reconnectDelayMs}ms...`);
-          this.reconnectTimer = setTimeout(attemptReconnect, this.reconnectDelayMs);
-        }
-      }
-    };
-
-    attemptReconnect();
-  }
-
-  /**
-   * 处理 WebSocket 帧
-   *
-   * 飞书 WS 帧类型：
-   * - type=0: 握手/连接建立确认，无需处理
-   * - type=1: 心跳 pong，无需处理
-   * - type=2: 业务消息（事件推送）
-   */
-  private async handleWsFrame(ws: WebSocket, frame: FeishuWsFrame): Promise<void> {
-    console.error(`[feishu] ws frame type=${frame.type}`);
-
-    if (frame.type === 0 || frame.type === 1) {
-      return;
-    }
-
-    if (frame.type === 2 && frame.payload) {
-      // 立即回 ACK，避免阻塞 WebSocket 帧循环（Claude 处理消息可能需要数十秒）
-      const bizMsgId = frame.headers?.['biz-msg-unique-id'] || '';
-      ws.send(JSON.stringify({
-        type: 2,
-        headers: { 'biz-msg-unique-id': bizMsgId },
-        payload: JSON.stringify({ code: 0 }),
-      }));
-
-      // 异步处理消息，不阻塞当前帧循环，确保心跳等帧能正常响应
-      Promise.resolve().then(async () => {
-        try {
-          const event = JSON.parse(frame.payload!) as FeishuMessageEvent;
-          await this.handleMessageEvent(event);
-        } catch (error) {
-          console.error(`[feishu] Failed to parse message event: ${error}`);
-        }
-      });
-    }
-  }
-
-  /**
    * 处理飞书消息事件
+   * SDK 已通过 eventDispatcher.register 路由好事件类型，data 直接是 { sender, message }
    */
   private async handleMessageEvent(event: FeishuMessageEvent): Promise<void> {
-    // 只处理消息接收事件
-    if (event.header?.event_type !== 'im.message.receive_v1') {
-      console.error(`[feishu] Ignoring event type: ${event.header?.event_type}`);
+    const { sender, message } = event;
+    const isGroup = message.chat_type === 'group';
+
+    // 消息去重：忽略 30 秒内已处理过的消息
+    const messageId = message.message_id;
+    const now = Date.now();
+    const lastProcessed = this.processedMessageIds.get(messageId);
+    if (lastProcessed && (now - lastProcessed) < this.DEDUP_TTL_MS) {
+      console.error(`[feishu] Ignoring duplicate message: ${messageId}`);
       return;
     }
+    this.processedMessageIds.set(messageId, now);
 
-    const { sender, message } = event.event;
-    const isGroup = message.chat_type === 'group';
+    // 清理过期的去重缓存
+    for (const [id, timestamp] of this.processedMessageIds.entries()) {
+      if (now - timestamp > this.DEDUP_TTL_MS) {
+        this.processedMessageIds.delete(id);
+      }
+    }
     const senderId = sender.sender_id.open_id;
     const conversationId = message.chat_id;
 
@@ -482,14 +343,147 @@ export class FeishuClient implements Channel {
     console.error(`[feishu] Received message from ${senderId} in ${conversationId}: ${messageText}`);
 
     if (this.channelMessageHandler) {
+      // 飞书群聊默认启用上下文功能（固定 20 条历史消息）
+      let contextMessage: string | undefined;
+      if (isGroup) {
+        console.log(`[feishu] Group chat detected, building context message...`);
+        try {
+          contextMessage = await this.buildContextMessage(event, messageText);
+          console.log(`[feishu] Context message built successfully`);
+        } catch (error) {
+          console.error(`[feishu] Failed to build context message: ${error}`);
+        }
+      } else {
+        console.log(`[feishu] Private chat, context disabled`);
+      }
+
       const context: ChannelMessageContext = {
         conversationId,
         senderId,
         isGroup,
         userId: senderId,
+        contextMessage,
       };
       await this.channelMessageHandler(context, messageText);
     }
+  }
+
+  /**
+   * 获取群聊历史消息
+   * 需要飞书开放平台申请 im:message:readonly 权限
+   */
+  private async getChatHistory(
+    conversationId: string,
+    limit: number
+  ): Promise<Array<{
+    messageId: string;
+    senderOpenId: string;
+    messageText: string;
+    timestamp: number;
+    mentions: Array<{ name: string; openId: string }>;
+  }>> {
+    console.log(`[feishu] Getting chat history: conversationId=${conversationId}, limit=${limit}`);
+    const accessToken = await this.getAccessToken();
+    const response = await fetch(
+      `${FEISHU_API_BASE}/im/v1/messages?container_id_type=chat&container_id=${conversationId}&page_size=${limit}&sort_type=ByCreateTimeDesc`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }
+    );
+
+    const data = (await response.json()) as {
+      code: number;
+      msg: string;
+      data?: {
+        items?: Array<{
+          message_id: string;
+          create_time: string;
+          sender: { sender_id: { open_id: string } };
+          body: { content: string };
+          mentions?: Array<{ name: string; id: { open_id: string } }>;
+        }>;
+      };
+    };
+
+    if (data.code !== 0) {
+      throw new Error(`Failed to get feishu chat history: ${data.msg}`);
+    }
+
+    const items = data.data?.items || [];
+    console.log(`[feishu] Retrieved ${items.length} history messages`);
+    return items.map((item) => {
+      let messageText = '';
+      try {
+        const body = JSON.parse(item.body.content) as { text?: string };
+        messageText = body.text || item.body.content;
+      } catch {
+        messageText = item.body.content;
+      }
+
+      return {
+        messageId: item.message_id,
+        senderOpenId: item.sender.sender_id.open_id,
+        messageText,
+        timestamp: parseInt(item.create_time),
+        mentions: (item.mentions || []).map((mention) => ({
+          name: mention.name,
+          openId: mention.id.open_id,
+        })),
+      };
+    });
+  }
+
+  /**
+   * 构建群聊上下文消息
+   * 读取模板文件，替换变量后返回完整的上下文字符串
+   */
+  private async buildContextMessage(
+    event: FeishuMessageEvent,
+    messageText: string
+  ): Promise<string> {
+    const { sender, message } = event;
+    const conversationId = message.chat_id;
+    const historySize = 5; // 固定 5 条历史消息
+
+    console.log(`[feishu] Building context message: conversationId=${conversationId}, sender=${sender.sender_id.open_id}, message="${messageText.substring(0, 100)}..."`);
+
+    // 获取历史消息
+    const history = await this.getChatHistory(conversationId, historySize);
+
+    // 读取模板文件（优先读取工作目录下的自定义模板，否则使用默认模板）
+    const defaultTemplatePath = path.join(__dirname, '../core/context-message.template');
+    const templateContent = fs.readFileSync(defaultTemplatePath, 'utf-8');
+
+    // 构建 mentions 段落
+    const currentMentions = message.mentions || [];
+    console.log(`[feishu] Current message mentions: ${currentMentions.length} people`);
+    const mentionsSection = currentMentions.length > 0
+      ? `- **提及了**:\n${currentMentions.map((m) => `  - ${m.name} (open_id: ${m.id.open_id})`).join('\n')}`
+      : '';
+
+    // 构建历史消息段落（已按时间倒序，最新的在前）
+    const historySection = history.length > 0
+      ? history.map((msg) => {
+          const mentionsPart = msg.mentions.length > 0
+            ? `\n  - **提及了**: ${msg.mentions.map((m) => `${m.name}(${m.openId})`).join(', ')}`
+            : '';
+          return `- **发送者**: \`${msg.senderOpenId}\`\n  - **内容**: ${msg.messageText}${mentionsPart}`;
+        }).join('\n\n')
+      : '（暂无历史消息）';
+
+    console.log(`[feishu] Context built: profileName="${this.config.profileName || '(none)'}", historySize=${historySize}, historyCount=${history.length}`);
+
+    // 替换模板变量
+    const result = templateContent
+      .replace(/\{\{profileName\}\}/g, this.config.profileName || '')
+      .replace(/\{\{systemPrompt\}\}/g, this.config.systemPrompt || '')
+      .replace(/\{\{senderOpenId\}\}/g, sender.sender_id.open_id)
+      .replace(/\{\{messageText\}\}/g, messageText)
+      .replace(/\{\{mentionsSection\}\}/g, mentionsSection)
+      .replace(/\{\{historySection\}\}/g, historySection);
+
+    console.log(`[feishu] Final context message length: ${result.length} chars`);
+    return result;
   }
 
   /**
@@ -521,7 +515,10 @@ export class FeishuClient implements Channel {
     isGroup: boolean
   ): Promise<FeishuSendMessageResponse> {
     const accessToken = await this.getAccessToken();
-    const receiveIdType = isGroup ? 'chat_id' : 'open_id';
+    // 无论私聊还是群聊，conversationId 都是 chat_id（oc_ 开头）
+    // 飞书私聊的 p2p 会话也有 chat_id，统一用 chat_id 类型发送
+    const receiveIdType = 'chat_id';
+    void isGroup; // isGroup 保留参数兼容性，实际不影响发送类型
 
     const response = await fetch(
       `${FEISHU_API_BASE}/im/v1/messages?receive_id_type=${receiveIdType}`,
@@ -560,7 +557,9 @@ export class FeishuClient implements Channel {
     isGroup: boolean
   ): Promise<FeishuSendMessageResponse> {
     const accessToken = await this.getAccessToken();
-    const receiveIdType = isGroup ? 'chat_id' : 'open_id';
+    // 无论私聊还是群聊，conversationId 都是 chat_id（oc_ 开头）
+    const receiveIdType = 'chat_id';
+    void isGroup;
 
     const postContent = {
       zh_cn: {
@@ -620,6 +619,8 @@ registerChannel({
     return new FeishuClient({
       appId: config.FEISHU_APP_ID,
       appSecret: config.FEISHU_APP_SECRET,
+      profileName: config.profileName,
+      systemPrompt: config.systemPrompt,
     });
   },
 });

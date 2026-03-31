@@ -30,7 +30,7 @@ const HELP_TEXT = [
  * 根据配置创建对应的 Channel 实例
  * 通过注册表查找对应的 ChannelDescriptor，调用其 create 工厂方法
  */
-function createChannel(channelType: string, config: ClaudeTalkConfig): Channel {
+function createChannel(channelType: string, config: ClaudeTalkConfig, profileName?: string): Channel {
   const descriptor = getChannelDescriptor(channelType)
   if (!descriptor) {
     throw new Error(`不支持的 channel 类型: ${channelType}，请检查配置文件中的 channel 字段`)
@@ -48,7 +48,14 @@ function createChannel(channelType: string, config: ClaudeTalkConfig): Channel {
     }
   }
 
-  return descriptor.create(channelConfig)
+  // 将 profile 级别的通用字段注入到 channelConfig，供 Channel 实现使用
+  const enrichedChannelConfig: Record<string, string> = {
+    ...channelConfig,
+    ...(profileName ? { profileName } : {}),
+    ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
+  }
+
+  return descriptor.create(enrichedChannelConfig)
 }
 
 /**
@@ -63,7 +70,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
   }
 
   const channelType = config.channel ?? 'dingtalk'
-  const channel = createChannel(channelType, config)
+  const channel = createChannel(channelType, config, profile)
 
   log(`[startBot] Starting channel=${channelType}, profile=${profile ?? '(default)'}, workDir=${workDir}`)
 
@@ -97,6 +104,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
         userId: context.userId,
         profile,
         channel: channelType,
+        contextMessage: context.contextMessage,
       })
       log(`[onMessage] Claude reply (first 200 chars): "${replyText.substring(0, 200)}"`)
       await channel.sendMessage(context.conversationId, replyText, context.isGroup)

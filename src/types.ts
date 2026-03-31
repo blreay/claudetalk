@@ -257,6 +257,8 @@ export interface ChannelMessageContext {
   isGroup: boolean
   /** 用于私聊通知的用户标识（钉钉 staffId / Discord userId） */
   userId: string
+  /** 飞书群聊上下文消息（由模板渲染生成，仅飞书群聊场景下有值） */
+  contextMessage?: string
 }
 
 /** Channel 统一接口，钉钉和 Discord 各自完整实现 */
@@ -299,6 +301,10 @@ export interface FeishuChannelConfig {
   groupAllowFrom?: string[]
   /** 消息类型: text | post */
   messageType?: 'text' | 'post'
+  /** 当前 profile 名称（由 startBot 注入，用于上下文模板渲染） */
+  profileName?: string
+  /** 角色系统提示词（由 startBot 注入，用于上下文模板渲染） */
+  systemPrompt?: string
 }
 
 /** 飞书 Channel 专属配置 */
