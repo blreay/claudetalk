@@ -9,7 +9,7 @@
     "claudetalk": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/core/context-message.template dist/core/ && mkdir -p ~/.claudetalk && cp src/core/context-message.template ~/.claudetalk/",
     "dev": "bun run ./src/cli.ts",
     "type-check": "tsc --noEmit",
     "lint": "eslint src/",
@@ -30,6 +30,11 @@
     "type": "git",
     "url": "https://github.com/suyin58/claudetalk.git"
   },
+  "files": [
+    "dist",
+    "package.json",
+    "README.md"
+  ],
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.60.0",
     "discord.js": "^14.25.1",

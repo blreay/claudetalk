@@ -76,9 +76,11 @@ export async function startBot(options: StartBotOptions): Promise<void> {
 
   // 注册统一消息处理器
   channel.onMessage(async (context: ChannelMessageContext, message: string) => {
-    const command = message.toLowerCase()
+    // 去掉飞书群聊中的 @机器人 前缀（如 "@_user_1 /new" → "/new"）
+    const strippedMessage = message.replace(/^@\S+\s*/, '').trim()
+    const command = strippedMessage.toLowerCase()
 
-    // 内置指令：清空会话
+    // 内置指令：清空会话（使用原始消息判断，不受 processedMessage 影响）
     if (RESET_COMMANDS.has(command)) {
       const hadSession = clearSession(context.conversationId, workDir, profile, channelType)
       const replyText = hadSession
@@ -88,7 +90,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
       return
     }
 
-    // 内置指令：帮助
+    // 内置指令：帮助（使用原始消息判断，不受 contextMessage 影响）
     if (HELP_COMMANDS.has(command)) {
       await channel.sendMessage(context.conversationId, HELP_TEXT, context.isGroup)
       return
@@ -104,7 +106,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
         userId: context.userId,
         profile,
         channel: channelType,
-        contextMessage: context.contextMessage,
+        processedMessage: context.processedMessage,
       })
       log(`[onMessage] Claude reply (first 200 chars): "${replyText.substring(0, 200)}"`)
       await channel.sendMessage(context.conversationId, replyText, context.isGroup)

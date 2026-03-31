@@ -257,8 +257,8 @@ export interface ChannelMessageContext {
   isGroup: boolean
   /** 用于私聊通知的用户标识（钉钉 staffId / Discord userId） */
   userId: string
-  /** 飞书群聊上下文消息（由模板渲染生成，仅飞书群聊场景下有值） */
-  contextMessage?: string
+  /** 加工后的消息（由 Channel 处理后生成，用于传给大模型；原始消息用于 ClaudeTalk 内置指令识别） */
+  processedMessage?: string
 }
 
 /** Channel 统一接口，钉钉和 Discord 各自完整实现 */

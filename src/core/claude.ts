@@ -218,8 +218,8 @@ export interface CallClaudeOptions {
   userId?: string
   profile?: string
   channel?: ChannelType
-  /** 飞书群聊上下文消息（由模板渲染生成），有值时替换原始 message 发送给 Claude */
-  contextMessage?: string
+  /** 加工后的消息（由 Channel 处理后生成），有值时替换原始 message 发送给 Claude */
+  processedMessage?: string
 }
 
 /**
@@ -239,7 +239,7 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
     userId = '',
     profile,
     channel = 'dingtalk',
-    contextMessage,
+    processedMessage,
   } = options
 
   const sessionMap = getSessionMap(workDir)
@@ -297,12 +297,13 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
     child.stdout.on('data', (data: Buffer) => { stdout += data.toString() })
     child.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
 
-    // 优先使用飞书群聊上下文消息（包含历史消息和角色信息），否则使用原始消息
-    const baseMessage = contextMessage ?? message
+    // 优先使用加工后的消息（包含历史消息和角色信息），否则使用原始消息
+    const baseMessage = processedMessage ?? message
     const actualMessage =
       profile && currentSubagentEnabled
         ? `Use the ${profile} agent to handle this: ${baseMessage}`
         : baseMessage
+    log(`[claude] ===== FULL MESSAGE TO CLAUDE (${actualMessage.length} chars) =====\n${actualMessage}\n[claude] ===== END OF MESSAGE =====`)
     child.stdin.write(actualMessage)
     child.stdin.end()
 

@@ -62,6 +62,7 @@
 | 获取与更新群组信息 | `im:chat` | 获取群聊信息 |
 | 获取用户基本信息 | `contact:user.base:readonly` | 获取用户信息 |
 | 查看群成员 | `im:chat.members:read` | 查看群成员列表 |
+| 获取用户基本信息（通讯录） | `contact:contact.base:readonly` | **获取群成员真实姓名必需**，缺少此权限群成员姓名将显示为 open_id |
 
 3. 点击「**申请权限**」
 4. 填写申请理由：`用于 Claude Code AI 助手与用户交互`
