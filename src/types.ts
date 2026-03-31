@@ -309,6 +309,29 @@ export interface FeishuChannelConfig {
   workDir?: string
 }
 
+// ========== Peer Message 类型 ==========
+
+/**
+ * Bot 间协作消息（peer-message）
+ * 存储在 {workDir}/.claudetalk/bot_{botName}.json 中
+ * 机器人A 发送消息成功后，解析 @标签，写入被@机器人的 peer-message 文件
+ * 机器人B 轮询自己的 peer-message 文件，10秒后处理
+ */
+export interface PeerMessage {
+  /** 唯一 ID */
+  id: string
+  /** 发送方 profile 名称 */
+  from: string
+  /** 飞书群 chat_id */
+  chatId: string
+  /** 飞书消息 ID（发送成功后记录） */
+  messageId: string
+  /** 消息内容（原始文本） */
+  message: string
+  /** 创建时间戳（ms） */
+  createdAt: number
+}
+
 /** 飞书 Channel 专属配置 */
 export interface FeishuProfileConfig {
   FEISHU_APP_ID: string

@@ -14,7 +14,15 @@ import type {
   Channel,
   ChannelMessageContext,
   FeishuChannelConfig,
+  PeerMessage,
 } from '../types.js';
+import {
+  appendPeerMessage,
+  loadPeerMessages,
+  parseAtMentions,
+  removePeerMessages,
+  writePeerMessagesFromContent,
+} from '../core/peer-message.js';
 import { registerChannel } from './registry.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -127,13 +135,22 @@ export class FeishuClient implements Channel {
   private readonly DEDUP_TTL_MS = 24 * 60 * 60 * 1000; // 24小时内重复事件忽略
   // 群成员配置文件路径（在 constructor 中初始化）
   private readonly chatMembersConfigPath!: string;
+  // peer-messages 目录路径（在 constructor 中初始化）
+  private readonly claudetalkDir!: string;
+  // peer-messages 轮询定时器
+  private peerPollTimer: ReturnType<typeof setInterval> | null = null;
+  // 已处理的 peer-message ID 集合（防止重复处理）
+  private processedPeerIds = new Set<string>();
+  // 机器人的 app_name（从飞书接口获取，用于读取 peer-message 文件）
+  private botAppName: string | null = null;
 
   constructor(config: FeishuChannelConfig) {
     this.config = config;
-    // 使用工作目录的 .claudetalk 目录存储 chat-members.json
+    // 使用工作目录的 .claudetalk 目录存储 chat-members.json 和 peer-messages
     // 统一放在 .claudetalk 目录下，便于管理项目内配置
     const workDir = config.workDir || process.cwd();
-    this.chatMembersConfigPath = path.join(workDir, '.claudetalk', 'chat-members.json');
+    this.claudetalkDir = path.join(workDir, '.claudetalk');
+    this.chatMembersConfigPath = path.join(this.claudetalkDir, 'chat-members.json');
     // 说明：chat-members.json 放在项目的 .claudetalk 目录下，因为飞书没有接口可以直接查询到群机器人信息
     // 只能通过历史消息的 sender 和 mentions 被动积累，并通过 API 验证后确定正确的 type
   }
@@ -166,6 +183,80 @@ export class FeishuClient implements Channel {
     } catch (error) {
       console.error('[feishu] Failed to save chat-members.json:', error);
     }
+  }
+
+  // ========== Peer Message 协作机制 ==========
+
+  /**
+   * 启动 peer-messages 轮询
+   * 每 5 秒检查一次自己的 bot_{profileName}.json
+   * 处理 createdAt + 10秒 <= now 的消息
+   */
+  private startPeerMessagePolling(): void {
+    // 优先使用 botAppName（飞书机器人的 app_name），与写入时的命名保持一致
+    // botAppName 在 initializeBotInfo 中获取，此时可能还未初始化，延迟到轮询时动态获取
+    console.log(`[feishu] Starting peer message polling (botAppName will be resolved at runtime)`);
+
+    this.peerPollTimer = setInterval(() => {
+      const botName = this.botAppName;
+      if (!botName) {
+        console.log('[feishu] botAppName not yet initialized, skipping peer message poll');
+        return;
+      }
+      this.processPeerMessages(botName).catch((error) => {
+        console.error(`[feishu] Error processing peer messages:`, error);
+      });
+    }, 5000);
+  }
+
+  /**
+   * 处理 peer-messages
+   * 找到 createdAt + 10秒 <= now 的消息，回复表情后走 Claude CLI 流程
+   */
+  private async processPeerMessages(botName: string): Promise<void> {
+    const messages = loadPeerMessages(this.claudetalkDir, botName);
+    if (messages.length === 0) return;
+
+    const now = Date.now();
+    const DELAY_MS = 10 * 1000; // 10秒延迟
+
+    const pendingMessages = messages.filter(
+      (msg) => !this.processedPeerIds.has(msg.id) && now - msg.createdAt >= DELAY_MS
+    );
+
+    if (pendingMessages.length === 0) return;
+
+    console.log(`[feishu] Processing ${pendingMessages.length} peer messages for bot_${botName}.json`);
+
+    for (const peerMsg of pendingMessages) {
+      this.processedPeerIds.add(peerMsg.id);
+
+      // 1. 给原消息回复 Get 表情（收到确认）
+      this.addMessageReaction(peerMsg.messageId, 'Get').catch((error) => {
+        console.error(`[feishu] Failed to add reaction to peer message ${peerMsg.messageId}:`, error);
+      });
+
+      // 2. 走 channelMessageHandler 流程（即 Claude CLI 流程）
+      if (this.channelMessageHandler) {
+        const context: ChannelMessageContext = {
+          conversationId: peerMsg.chatId,
+          senderId: peerMsg.from,
+          isGroup: true,
+          userId: peerMsg.from,
+          processedMessage: undefined,
+        };
+
+        try {
+          await this.channelMessageHandler(context, peerMsg.message);
+          console.log(`[feishu] Peer message processed: id=${peerMsg.id}, from=${peerMsg.from}`);
+        } catch (error) {
+          console.error(`[feishu] Failed to process peer message id=${peerMsg.id}:`, error);
+        }
+      }
+    }
+
+    // 原子删除已处理的消息
+    removePeerMessages(this.claudetalkDir, botName, this.processedPeerIds);
   }
 
   /**
@@ -435,6 +526,7 @@ export class FeishuClient implements Channel {
       if (data.code === 0 && data.bot) {
         const { open_id, app_name } = data.bot;
         this.botOpenId = open_id;
+        this.botAppName = app_name; // 保存 app_name，用于读取 peer-message 文件
         // bot.v3/info 接口不返回 app_id，使用当前应用的 app_id
         const appId = this.config.appId;
         console.error(`[feishu] Bot info initialized: open_id=${open_id}, app_name=${app_name}, app_id=${appId}`);
@@ -548,6 +640,8 @@ export class FeishuClient implements Channel {
       try {
         this.wsClient!.start({ eventDispatcher });
         console.error('[feishu] WebSocket client started');
+        // 启动 peer-messages 轮询（机器人间协作）
+        this.startPeerMessagePolling();
         resolve();
       } catch (error) {
         // 启动失败时清除实例，允许下次重试
@@ -1080,13 +1174,22 @@ ${chatMembers.map((member, index) => {
   /**
    * 发送消息（实现 Channel 接口）
    * 统一使用 text 类型发送消息，支持 @标签格式
+   * 发送成功后，解析消息中的 @标签，将 peer-message 写入被@机器人的文件
    */
   async sendMessage(
     conversationId: string,
     content: string,
     isGroup: boolean
   ): Promise<void> {
-    await this.sendTextMessage(conversationId, content, isGroup);
+    const response = await this.sendTextMessage(conversationId, content, isGroup);
+
+    // 发送成功后，解析 @标签，写入 peer-messages
+    const messageId = response.data?.message_id;
+    if (messageId && isGroup) {
+      const chatMembers = this.getChatMembersFromConfig(conversationId);
+      const fromProfile = this.config.profileName || 'unknown';
+      writePeerMessagesFromContent(this.claudetalkDir, conversationId, messageId, content, fromProfile, chatMembers);
+    }
   }
 
   /**
