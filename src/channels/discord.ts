@@ -15,6 +15,7 @@ import {
 } from 'discord.js'
 import type { Channel, ChannelMessageContext } from '../types.js'
 import { registerChannel } from './registry.js'
+import { createLogger } from '../core/logger.js'
 
 export interface DiscordChannelConfig {
   /** Bot Token */
@@ -34,6 +35,7 @@ export class DiscordClient implements Channel {
   private config: DiscordChannelConfig
   private client: Client
   private messageHandler: ((context: ChannelMessageContext, message: string) => Promise<void>) | null = null
+  private readonly logger = createLogger('discord')
 
   constructor(config: DiscordChannelConfig) {
     this.config = config
@@ -63,7 +65,7 @@ export class DiscordClient implements Channel {
     }
 
     this.client.on(Events.ClientReady, (readyClient) => {
-      console.error(`[discord] Bot 已上线: ${readyClient.user.tag}`)
+      this.logger(`[discord] Bot 已上线: ${readyClient.user.tag}`)
     })
 
     this.client.on(Events.MessageCreate, async (message: Message) => {
@@ -86,7 +88,7 @@ export class DiscordClient implements Channel {
         userId: message.author.id,
       }
 
-      console.error(`[discord] Message from ${message.author.tag} in ${message.channelId}: ${messageText}`)
+      this.logger(`[discord] Message from ${message.author.tag} in ${message.channelId}: ${messageText}`)
 
       if (this.messageHandler) {
         await this.messageHandler(context, messageText)
@@ -96,8 +98,8 @@ export class DiscordClient implements Channel {
     try {
       await this.client.login(this.config.token)
     } catch (error) {
-      console.error('[discord] 登录失败，完整错误信息:')
-      console.error(error)
+      this.logger('[discord] 登录失败，完整错误信息:')
+      this.logger(String(error))
 
       // 检查是否为连接超时
       const isTimeout =
@@ -159,7 +161,7 @@ export class DiscordClient implements Channel {
    */
   stop(): void {
     this.client.destroy()
-    console.error('[discord] Bot 已停止')
+    this.logger('[discord] Bot 已停止')
   }
 
   /**
@@ -196,7 +198,7 @@ export class DiscordClient implements Channel {
       const dmChannel = await user.createDM()
       await dmChannel.send(`✅ ClaudeTalk 已上线\n📁 工作目录: ${workDir}`)
     } catch (error) {
-      console.error(`[discord] 发送上线通知失败: ${error}`)
+      this.logger(`[discord] 发送上线通知失败: ${error}`)
     }
   }
 

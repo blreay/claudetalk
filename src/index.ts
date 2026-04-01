@@ -4,7 +4,7 @@
  */
 
 import { getChannelDescriptor } from './channels/index.js'
-import { callClaude, clearSession, findLastActivePrivateSession, loadConfig, log } from './core/claude.js'
+import { callClaude, clearSession, createLogger, findLastActivePrivateSession, loadConfig, log } from './core/claude.js'
 import type { Channel, ChannelMessageContext, ClaudeTalkConfig } from './types.js'
 
 export interface StartBotOptions {
@@ -72,8 +72,9 @@ export async function startBot(options: StartBotOptions): Promise<void> {
 
   const channelType = config.channel ?? 'dingtalk'
   const channel = createChannel(channelType, config, workDir, profile)
+  const logger = createLogger(profile)
 
-  log(`[startBot] Starting channel=${channelType}, profile=${profile ?? '(default)'}, workDir=${workDir}`)
+  logger(`[startBot] Starting channel=${channelType}, workDir=${workDir}`)
 
   // 注册统一消息处理器
   channel.onMessage(async (context: ChannelMessageContext, message: string) => {
@@ -109,24 +110,24 @@ export async function startBot(options: StartBotOptions): Promise<void> {
         channel: channelType,
         processedMessage: context.processedMessage,
       })
-      log(`[onMessage] Claude reply (first 200 chars): "${replyText.substring(0, 200)}"`)
+      logger(`[onMessage] Claude reply (first 200 chars): "${replyText.substring(0, 200)}"`)
       await channel.sendMessage(context.conversationId, replyText, context.isGroup)
     } catch (error) {
-      log(`[ERROR] ${error}`)
+      logger(`[ERROR] ${error}`)
       const errorText = `处理消息时出错: ${error instanceof Error ? error.message : String(error)}`
       await channel.sendMessage(context.conversationId, errorText, context.isGroup).catch(() => {})
     }
   })
 
   await channel.start()
-  log(`[startBot] ${channelType} Bot 已启动`)
+  logger(`[startBot] ${channelType} Bot 已启动`)
 
   // 连接成功后发上线通知
   if (channel.sendOnlineNotification) {
-    const lastSession = findLastActivePrivateSession(workDir)
+    const lastSession = findLastActivePrivateSession(workDir, channelType, profile)
     if (lastSession?.userId) {
       await channel.sendOnlineNotification(lastSession.userId, workDir).catch((error) => {
-        log(`[notify] 上线通知发送失败: ${error}`)
+        logger(`[notify] 上线通知发送失败: ${error}`)
       })
     }
   }

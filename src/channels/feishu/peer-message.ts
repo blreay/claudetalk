@@ -12,6 +12,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import type { PeerMessage } from '../../types.js';
+import { createLogger } from '../../core/logger.js';
+
+const logger = createLogger('feishu', 'peer-message');
 
 // ========== 文件路径 ==========
 
@@ -35,7 +38,7 @@ export function loadPeerMessages(claudetalkDir: string, botName: string): PeerMe
       return JSON.parse(content) as PeerMessage[];
     }
   } catch (error) {
-    console.error(`[peer-message] Failed to load bot_${botName}.json:`, error);
+    logger(`[peer-message] Failed to load bot_${botName}.json: ${JSON.stringify(error)}`);
   }
   return [];
 }
@@ -65,7 +68,7 @@ export function appendPeerMessage(claudetalkDir: string, botName: string, messag
   const existingMessages = loadPeerMessages(claudetalkDir, botName);
   existingMessages.push(message);
   atomicWritePeerMessages(claudetalkDir, botName, existingMessages);
-  console.log(`[peer-message] Appended message to bot_${botName}.json: id=${message.id}, from=${message.from}`);
+  logger(`[peer-message] Appended message to bot_${botName}.json: id=${message.id}, from=${message.from}`);
 }
 
 /**
@@ -76,7 +79,7 @@ export function removePeerMessages(claudetalkDir: string, botName: string, proce
   const existingMessages = loadPeerMessages(claudetalkDir, botName);
   const remainingMessages = existingMessages.filter((msg) => !processedIds.has(msg.id));
   atomicWritePeerMessages(claudetalkDir, botName, remainingMessages);
-  console.log(`[peer-message] Removed ${existingMessages.length - remainingMessages.length} processed messages from bot_${botName}.json`);
+  logger(`[peer-message] Removed ${existingMessages.length - remainingMessages.length} processed messages from bot_${botName}.json`);
 }
 
 // ========== @标签解析 ==========
@@ -126,7 +129,7 @@ export function writePeerMessagesFromContent(
     );
 
     if (!matchedBot) {
-      console.log(`[peer-message] No bot matched for mention: userId=${mention.userId}, name=${mention.name}`);
+      logger(`[peer-message] No bot matched for mention: userId=${mention.userId}, name=${mention.name}`);
       continue;
     }
 
@@ -143,6 +146,6 @@ export function writePeerMessagesFromContent(
     };
 
     appendPeerMessage(claudetalkDir, botName, peerMessage);
-    console.log(`[peer-message] Wrote peer message to bot_${botName}.json: messageId=${messageId}, from=${fromProfile}`);
+    logger(`[peer-message] Wrote peer message to bot_${botName}.json: messageId=${messageId}, from=${fromProfile}`);
   }
 }

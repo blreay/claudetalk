@@ -18,6 +18,7 @@ import type {
   PeerMessage,
 } from '../types.js';
 import { registerChannel } from './registry.js';
+import { createLogger } from '../core/logger.js';
 import {
   loadPeerMessages,
   removePeerMessages,
@@ -143,6 +144,8 @@ export class FeishuClient implements Channel {
   // 机器人的 app_name（从飞书接口获取，用于读取 peer-message 文件）
   private botAppName: string | null = null;
 
+  private readonly logger: (msg: string) => void;
+
   constructor(config: FeishuChannelConfig) {
     this.config = config;
     // 使用工作目录的 .claudetalk 目录存储 chat-members.json 和 peer-messages
@@ -152,6 +155,9 @@ export class FeishuClient implements Channel {
     this.chatMembersConfigPath = path.join(this.claudetalkDir, 'feishu', 'chat-members.json');
     // 说明：chat-members.json 放在项目的 .claudetalk 目录下，因为飞书没有接口可以直接查询到群机器人信息
     // 只能通过历史消息的 sender 和 mentions 被动积累，并通过 API 验证后确定正确的 type
+
+    const profileName = config.profileName || 'default';
+    this.logger = createLogger('feishu', profileName);
   }
 
   /**
@@ -164,7 +170,7 @@ export class FeishuClient implements Channel {
         return JSON.parse(content) as ChatMembersConfig;
       }
     } catch (error) {
-      console.error('[feishu] Failed to load chat-members.json:', error);
+      this.logger(`Failed to load chat-members.json: ${error}`);
     }
     return {};
   }
@@ -180,7 +186,7 @@ export class FeishuClient implements Channel {
       }
       fs.writeFileSync(this.chatMembersConfigPath, JSON.stringify(config, null, 2), 'utf-8');
     } catch (error) {
-      console.error('[feishu] Failed to save chat-members.json:', error);
+      this.logger(`Failed to save chat-members.json: ${error}`);
     }
   }
 
@@ -194,16 +200,16 @@ export class FeishuClient implements Channel {
   private startPeerMessagePolling(): void {
     // 优先使用 botAppName（飞书机器人的 app_name），与写入时的命名保持一致
     // botAppName 在 initializeBotInfo 中获取，此时可能还未初始化，延迟到轮询时动态获取
-    console.log(`[feishu] Starting peer message polling (botAppName will be resolved at runtime)`);
+    this.logger(`Starting peer message polling (botAppName will be resolved at runtime)`);
 
     this.peerPollTimer = setInterval(() => {
       const botName = this.botAppName;
       if (!botName) {
-        console.log('[feishu] botAppName not yet initialized, skipping peer message poll');
+        this.logger('[feishu] botAppName not yet initialized, skipping peer message poll');
         return;
       }
       this.processPeerMessages(botName).catch((error) => {
-        console.error(`[feishu] Error processing peer messages:`, error);
+        this.logger(`Error processing peer messages: ${error}`);
       });
     }, 5000);
   }
@@ -225,14 +231,14 @@ export class FeishuClient implements Channel {
 
     if (pendingMessages.length === 0) return;
 
-    console.log(`[feishu] Processing ${pendingMessages.length} peer messages for bot_${botName}.json`);
+    this.logger(`Processing ${pendingMessages.length} peer messages for bot_${botName}.json`);
 
     for (const peerMsg of pendingMessages) {
       this.processedPeerIds.add(peerMsg.id);
 
       // 1. 给原消息回复 Get 表情（收到确认）
       this.addMessageReaction(peerMsg.messageId, 'Get').catch((error) => {
-        console.error(`[feishu] Failed to add reaction to peer message ${peerMsg.messageId}:`, error);
+        this.logger(`Failed to add reaction to peer message ${peerMsg.messageId}: ${error}`);
       });
 
       // 2. 走 channelMessageHandler 流程（即 Claude CLI 流程）
@@ -247,9 +253,9 @@ export class FeishuClient implements Channel {
 
         try {
           await this.channelMessageHandler(context, peerMsg.message);
-          console.log(`[feishu] Peer message processed: id=${peerMsg.id}, from=${peerMsg.from}`);
+          this.logger(`Peer message processed: id=${peerMsg.id}, from=${peerMsg.from}`);
         } catch (error) {
-          console.error(`[feishu] Failed to process peer message id=${peerMsg.id}:`, error);
+          this.logger(`Failed to process peer message id=${peerMsg.id}: ${error}`);
         }
       }
     }
@@ -290,7 +296,7 @@ export class FeishuClient implements Channel {
         if (updatedOpenId) existing.openId = updatedOpenId;
         if (updatedUnionId) existing.unionId = updatedUnionId;
         if (updatedAppId) existing.appId = updatedAppId;
-        console.log(`[feishu] Updated chat member: chatId=${chatId}, name=${memberName}, type=${memberType}, openId=${updatedOpenId}, unionId=${updatedUnionId}, appId=${updatedAppId}`);
+        this.logger(`Updated chat member: chatId=${chatId}, name=${memberName}, type=${memberType}, openId=${updatedOpenId}, unionId=${updatedUnionId}, appId=${updatedAppId}`);
         config[chatId] = members;
         this.saveChatMembersConfig(config);
       }
@@ -300,7 +306,7 @@ export class FeishuClient implements Channel {
       if (ids?.unionId) newMember.unionId = ids.unionId;
       if (ids?.appId) newMember.appId = ids.appId;
       members.push(newMember);
-      console.log(`[feishu] Added chat member: chatId=${chatId}, name=${memberName}, type=${memberType}, openId=${ids?.openId}, unionId=${ids?.unionId}, appId=${ids?.appId}`);
+      this.logger(`Added chat member: chatId=${chatId}, name=${memberName}, type=${memberType}, openId=${ids?.openId}, unionId=${ids?.unionId}, appId=${ids?.appId}`);
       config[chatId] = members;
       this.saveChatMembersConfig(config);
     }
@@ -331,18 +337,18 @@ export class FeishuClient implements Channel {
         msg: string;
         data?: { user: { name: string; open_id: string; union_id: string } };
       };
-      console.error(`[feishu] ===== User Info API Response (openId=${openId}) =====`);
-      console.error('[feishu] Response:', JSON.stringify(data, null, 2));
-      console.error('[feishu] ===================================================');
+      this.logger(`===== User Info API Response (openId=${openId}) =====`);
+      this.logger(`Response: ${JSON.stringify(data, null, 2)}`);
+      this.logger('[feishu] ===================================================');
       if (data.code === 0 && data.data?.user?.name) {
         const { name, union_id: unionId } = data.data.user;
-        console.log(`[feishu] Resolved user info: openId=${openId}, name=${name}, unionId=${unionId}`);
+        this.logger(`Resolved user info: openId=${openId}, name=${name}, unionId=${unionId}`);
         return { name, unionId };
       }
-      console.warn(`[feishu] Failed to resolve user info for ${openId}: code=${data.code}, msg=${data.msg}`);
+      this.logger(`Failed to resolve user info for ${openId}: code=${data.code}, msg=${data.msg}`);
       return null;
     } catch (error) {
-      console.error(`[feishu] Error fetching user info for ${openId}:`, error);
+      this.logger(`Error fetching user info for ${openId}: ${error}`);
       return null;
     }
   }
@@ -420,13 +426,13 @@ export class FeishuClient implements Channel {
 
     // API 查询失败，但有 knownName（如 mentions 中的 name），则使用 knownName 并写入配置（type 为空）
     if (knownName) {
-      console.log(`[feishu] Using known name from mentions for ${openId}: ${knownName}`);
+      this.logger(`Using known name from mentions for ${openId}: ${knownName}`);
       this.updateChatMember(chatId, knownName, type, { openId, unionId: resolvedUnionId });
       return knownName;
     }
 
     // API 查询失败且没有 knownName，返回 openId（不写入配置文件）
-    console.warn(`[feishu] User ${openId} is invalid and no known name, skipping config update`);
+    this.logger(`User ${openId} is invalid and no known name, skipping config update`);
     return openId;
   }
 
@@ -445,7 +451,7 @@ export class FeishuClient implements Channel {
     try {
       await this.sendTextMessage(userId, notifyText, false);
     } catch (error) {
-      console.error(`[feishu][notify] Failed to send online notification: ${error}`);
+      this.logger(`[feishu][notify] Failed to send online notification: ${error}`);
     }
   }
 
@@ -504,7 +510,7 @@ export class FeishuClient implements Channel {
     }
 
     this.botOpenId = data.bot.open_id;
-    console.error(`[feishu] Bot open_id: ${this.botOpenId}`);
+    this.logger(`Bot open_id: ${this.botOpenId}`);
     return this.botOpenId;
   }
 
@@ -528,7 +534,7 @@ export class FeishuClient implements Channel {
         this.botAppName = app_name; // 保存 app_name，用于读取 peer-message 文件
         // bot.v3/info 接口不返回 app_id，使用当前应用的 app_id
         const appId = this.config.appId;
-        console.error(`[feishu] Bot info initialized: open_id=${open_id}, app_name=${app_name}, app_id=${appId}`);
+        this.logger(`Bot info initialized: open_id=${open_id}, app_name=${app_name}, app_id=${appId}`);
 
         // 将当前机器人信息写入所有群的配置文件（以 name 作为唯一 key）
         const config = this.loadChatMembersConfig();
@@ -546,7 +552,7 @@ export class FeishuClient implements Channel {
               existing.type = 'bot';
               existing.openId = open_id;
               existing.appId = appId;
-              console.log(`[feishu] Updated bot in chat ${chatId}: name=${app_name}, openId=${open_id}, appId=${appId}`);
+              this.logger(`Updated bot in chat ${chatId}: name=${app_name}, openId=${open_id}, appId=${appId}`);
               updated = true;
             }
           } else {
@@ -557,7 +563,7 @@ export class FeishuClient implements Channel {
               openId: open_id,
               appId: appId
             });
-            console.log(`[feishu] Added bot to chat ${chatId}: name=${app_name}, openId=${open_id}, appId=${appId}`);
+            this.logger(`Added bot to chat ${chatId}: name=${app_name}, openId=${open_id}, appId=${appId}`);
             updated = true;
           }
         }
@@ -572,7 +578,7 @@ export class FeishuClient implements Channel {
             openId: open_id,
             appId: appId
           }];
-          console.log(`[feishu] Created default bot entry: name=${app_name}, openId=${open_id}, appId=${appId}`);
+          this.logger(`Created default bot entry: name=${app_name}, openId=${open_id}, appId=${appId}`);
           updated = true;
         }
 
@@ -583,7 +589,7 @@ export class FeishuClient implements Channel {
         throw new Error(`Failed to get bot info: ${data.msg}`);
       }
     } catch (error) {
-      console.error(`[feishu] Error initializing bot info:`, error);
+      this.logger(`Error initializing bot info: ${error}`);
       throw error;
     }
   }
@@ -604,11 +610,11 @@ export class FeishuClient implements Channel {
 
     // 防止重复创建连接：若已有 WSClient 实例则直接返回
     if (this.wsClient) {
-      console.error('[feishu] WebSocket client already running, skipping start');
+      this.logger('[feishu] WebSocket client already running, skipping start');
       return;
     }
 
-    console.error('[feishu] Connecting to Feishu WebSocket...');
+    this.logger('[feishu] Connecting to Feishu WebSocket...');
 
     // 预先复制模板文件到用户目录，确保使用最新版本
     this.copyTemplateFile();
@@ -623,7 +629,7 @@ export class FeishuClient implements Channel {
         // 异步处理事件，避免阻塞事件接收
         this.handleMessageEventAsync(data as unknown as FeishuMessageEvent).catch((error) => {
           const eventId = (data as unknown as FeishuMessageEvent).header?.event_id || (data as unknown as FeishuMessageEvent).uuid;
-          console.error(`[feishu] Failed to handle message event (event_id=${eventId}):`, error);
+          this.logger(`Failed to handle message event (event_id=${eventId}): ${error}`);
         });
       },
     });
@@ -638,7 +644,7 @@ export class FeishuClient implements Channel {
     return new Promise((resolve, reject) => {
       try {
         this.wsClient!.start({ eventDispatcher });
-        console.error('[feishu] WebSocket client started');
+        this.logger('[feishu] WebSocket client started');
         // 启动 peer-messages 轮询（机器人间协作）
         this.startPeerMessagePolling();
         resolve();
@@ -659,10 +665,10 @@ export class FeishuClient implements Channel {
     const templateDir = path.join(homeDir, '.claudetalk');
     const templatePath = path.join(templateDir, 'context-message.template');
     
-    const sourceTemplatePath = path.join(__dirname, '../core/context-message.template');
+    const sourceTemplatePath = path.join(__dirname, './feishu/context-message.template');
     
     if (!fs.existsSync(sourceTemplatePath)) {
-      console.error(`[feishu] Source template not found at ${sourceTemplatePath}`);
+      this.logger(`Source template not found at ${sourceTemplatePath}`);
       return;
     }
     
@@ -673,7 +679,7 @@ export class FeishuClient implements Channel {
     
     // 复制模板文件
     fs.copyFileSync(sourceTemplatePath, templatePath);
-    console.error(`[feishu] Copied template file to ${templatePath}`);
+    this.logger(`Copied template file to ${templatePath}`);
   }
 
   /**
@@ -682,7 +688,7 @@ export class FeishuClient implements Channel {
   stop(): void {
     if (this.wsClient) {
       this.wsClient = null;
-      console.error('[feishu] WebSocket stopped');
+      this.logger('[feishu] WebSocket stopped');
     }
   }
 
@@ -695,16 +701,16 @@ export class FeishuClient implements Channel {
     const isGroup = message.chat_type === 'group';
 
     // 打印原始消息事件，便于排查问题
-    console.error('[feishu] ===== Raw Message Event =====');
-    console.error('[feishu] Event:', JSON.stringify(event, null, 2));
-    console.error('[feishu] =============================');
+    this.logger('[feishu] ===== Raw Message Event =====');
+    this.logger(`Event: ${JSON.stringify(event, null, 2)}`);
+    this.logger('[feishu] =============================');
 
     // 事件去重：使用 event_id 或 uuid 作为唯一标识
     const eventId = event.header?.event_id || event.uuid || message.message_id;
     const now = Date.now();
     const lastProcessed = this.processedEventIds.get(eventId);
     if (lastProcessed && (now - lastProcessed) < this.DEDUP_TTL_MS) {
-      console.error(`[feishu] Ignoring duplicate event: ${eventId}`);
+      this.logger(`Ignoring duplicate event: ${eventId}`);
       return;
     }
     this.processedEventIds.set(eventId, now);
@@ -723,38 +729,38 @@ export class FeishuClient implements Channel {
       const groupPolicy = this.config.groupPolicy || 'at_only';
 
       if (groupPolicy === 'disabled') {
-        console.error('[feishu] Group chat is disabled, ignoring message');
+        this.logger('[feishu] Group chat is disabled, ignoring message');
         return;
       }
 
       if (groupPolicy === 'at_only') {
         // 只响应 @ 机器人的消息
         const botOpenId = await this.fetchBotOpenId();
-        console.error('[feishu] ===== Mention Check Debug =====');
-        console.error('[feishu] Bot Open ID:', botOpenId);
-        console.error('[feishu] Message Mentions:', JSON.stringify(message.mentions, null, 2));
-        console.error('[feishu] Message Mentions Count:', message.mentions?.length || 0);
+        this.logger('[feishu] ===== Mention Check Debug =====');
+        this.logger(`Bot Open ID: ${botOpenId}`);
+        this.logger(`Message Mentions: ${JSON.stringify(message.mentions, null, 2)}`);
+        this.logger(`Message Mentions Count: ${message.mentions?.length || 0}`);
         
         // 打印每个 mention 的详细信息
         if (message.mentions && message.mentions.length > 0) {
           message.mentions.forEach((mention, index) => {
-            console.error(`[feishu] Mention ${index}:`);
-            console.error(`[feishu]   - Name: ${mention.name}`);
-            console.error(`[feishu]   - Open ID: ${mention.id?.open_id}`);
-            console.error(`[feishu]   - Union ID: ${mention.id?.union_id}`);
-            console.error(`[feishu]   - User ID: ${mention.id?.user_id}`);
-            console.error(`[feishu]   - Match Bot: ${mention.id?.open_id === botOpenId}`);
+            this.logger(`Mention ${index}:`);
+            this.logger(`  - Name: ${mention.name}`);
+            this.logger(`  - Open ID: ${mention.id?.open_id}`);
+            this.logger(`  - Union ID: ${mention.id?.union_id}`);
+            this.logger(`  - User ID: ${mention.id?.user_id}`);
+            this.logger(`  - Match Bot: ${mention.id?.open_id === botOpenId}`);
           });
         }
         
         const isMentioned = message.mentions?.some(
           (mention) => mention.id?.open_id === botOpenId
         );
-        console.error('[feishu] Is Mentioned:', isMentioned);
-        console.error('[feishu] ================================');
+        this.logger(`Is Mentioned: ${isMentioned}`);
+        this.logger('[feishu] ================================');
         
         if (!isMentioned) {
-          console.error('[feishu] Bot not mentioned in group, ignoring message');
+          this.logger('[feishu] Bot not mentioned in group, ignoring message');
           return;
         }
       }
@@ -762,7 +768,7 @@ export class FeishuClient implements Channel {
       if (groupPolicy === 'allowlist') {
         const groupAllowFrom = this.config.groupAllowFrom || this.config.allowFrom || [];
         if (!groupAllowFrom.includes(senderId)) {
-          console.error(`[feishu] Sender ${senderId} not in group allowlist, ignoring`);
+          this.logger(`Sender ${senderId} not in group allowlist, ignoring`);
           return;
         }
       }
@@ -772,7 +778,7 @@ export class FeishuClient implements Channel {
       if (dmPolicy === 'allowlist') {
         const allowFrom = this.config.allowFrom || [];
         if (!allowFrom.includes(senderId)) {
-          console.error(`[feishu] Sender ${senderId} not in allowlist, ignoring`);
+          this.logger(`Sender ${senderId} not in allowlist, ignoring`);
           return;
         }
       }
@@ -780,7 +786,7 @@ export class FeishuClient implements Channel {
 
     // 目前只处理文本消息
     if (message.message_type !== 'text') {
-      console.error(`[feishu] Unsupported message type: ${message.message_type}, ignoring`);
+      this.logger(`Unsupported message type: ${message.message_type}, ignoring`);
       return;
     }
 
@@ -807,15 +813,15 @@ export class FeishuClient implements Channel {
     }
 
     if (!messageText.trim()) {
-      console.error('[feishu] Empty message content, ignoring');
+      this.logger('[feishu] Empty message content, ignoring');
       return;
     }
 
-    console.error(`[feishu] Received message from ${senderId} in ${conversationId}: ${messageText}`);
+    this.logger(`Received message from ${senderId} in ${conversationId}: ${messageText}`);
 
     // 立即回复 Get 表情（👌）
     this.addMessageReaction(message.message_id, 'Get').catch(error => {
-      console.error(`[feishu] Failed to add reaction to message ${message.message_id}:`, error);
+      this.logger(`Failed to add reaction to message ${message.message_id}: ${error}`);
     });
 
     // 群聊中从当前消息提取成员信息，更新群成员配置文件
@@ -824,36 +830,36 @@ export class FeishuClient implements Channel {
       for (const mention of message.mentions || []) {
         const mentionOpenId = mention.id?.open_id;
         if (!mentionOpenId) {
-          console.warn(`[feishu] Skipping mention without open_id, name=${mention.name}`);
+          this.logger(`Skipping mention without open_id, name=${mention.name}`);
           continue;
         }
         const mentionUnionId = mention.id?.union_id;
         // 异步查询，传入 mentions 中的 name 和 union_id
         this.getMemberInfo(mentionOpenId, conversationId, mention.name, mentionUnionId || undefined).catch(error => {
-          console.error(`[feishu] Failed to resolve mention info for ${mentionOpenId}:`, error);
+          this.logger(`Failed to resolve mention info for ${mentionOpenId}: ${error}`);
         });
       }
       // sender 本身：传入 union_id，通过 API 查询真实 name（异步，不阻塞消息处理）
       const senderUnionId = sender.sender_id?.union_id;
       this.getMemberInfo(senderId, conversationId, undefined, senderUnionId || undefined).catch(error => {
-        console.error(`[feishu] Failed to resolve sender info for ${senderId}:`, error);
+        this.logger(`Failed to resolve sender info for ${senderId}: ${error}`);
       });
-      console.log(`[feishu] Updated chat members from current message, chatId=${conversationId}`);
+      this.logger(`Updated chat members from current message, chatId=${conversationId}`);
     }
 
     if (this.channelMessageHandler) {
       // 飞书群聊默认启用上下文功能（固定 20 条历史消息）
       let contextMessage: string | undefined;
       if (isGroup) {
-        console.log(`[feishu] Group chat detected, building context message...`);
+        this.logger(`Group chat detected, building context message...`);
         try {
           contextMessage = await this.buildContextMessage(event, messageText);
-          console.log(`[feishu] Context message built successfully`);
+          this.logger(`Context message built successfully`);
         } catch (error) {
-          console.error(`[feishu] Failed to build context message (event_id=${eventId}):`, error);
+          this.logger(`Failed to build context message (event_id=${eventId}): ${error}`);
         }
       } else {
-        console.log(`[feishu] Private chat, context disabled`);
+        this.logger(`Private chat, context disabled`);
       }
 
       const context: ChannelMessageContext = {
@@ -866,7 +872,7 @@ export class FeishuClient implements Channel {
       try {
         await this.channelMessageHandler(context, messageText);
       } catch (error) {
-        console.error(`[feishu] Failed to execute message handler (event_id=${eventId}):`, error);
+        this.logger(`Failed to execute message handler (event_id=${eventId}): ${error}`);
       }
     }
   }
@@ -885,7 +891,7 @@ export class FeishuClient implements Channel {
     timestamp: number;
     mentions: Array<{ name: string; openId: string; type: string; unionId?: string; appId?: string }>;
   }>> {
-    console.log(`[feishu] Getting chat history: conversationId=${conversationId}, limit=${limit}`);
+    this.logger(`Getting chat history: conversationId=${conversationId}, limit=${limit}`);
     const accessToken = await this.getAccessToken();
     const response = await fetch(
       `${FEISHU_API_BASE}/im/v1/messages?container_id_type=chat&container_id=${conversationId}&page_size=${limit}&sort_type=ByCreateTimeDesc`,
@@ -913,16 +919,16 @@ export class FeishuClient implements Channel {
     };
 
     // 打印历史消息 API 返回的原始数据，便于排查问题
-    console.error('[feishu] ===== Chat History API Response =====');
-    console.error('[feishu] Response:', JSON.stringify(data, null, 2));
-    console.error('[feishu] =====================================');
+    this.logger('[feishu] ===== Chat History API Response =====');
+    this.logger(`Response: ${JSON.stringify(data, null, 2)}`);
+    this.logger('[feishu] =====================================');
 
     if (data.code !== 0) {
       throw new Error(`Failed to get feishu chat history: ${data.msg}`);
     }
 
     const items = data.data?.items || [];
-    console.log(`[feishu] Retrieved ${items.length} history messages`);
+    this.logger(`Retrieved ${items.length} history messages`);
 
     // 收集 mentions 和 sender 的信息，用于并发查询
     // key: open_id，value: knownName（历史消息中没有 union_id，只有 open_id 和 name）
@@ -960,11 +966,11 @@ export class FeishuClient implements Channel {
         if (!existingBot) {
           if (botSelfBot) {
             // _bot_self 中有该机器人信息，用真实的 name 写入
-            console.log(`[feishu] Found bot sender with app_id=${id}, matched in _bot_self: name=${botSelfBot.name}`);
+            this.logger(`Found bot sender with app_id=${id}, matched in _bot_self: name=${botSelfBot.name}`);
             this.updateChatMember(conversationId, botSelfBot.name, 'bot', { appId: id, openId: botSelfBot.openId });
           } else {
             // _bot_self 中也没有该机器人信息，暂时用 app_id 作为 name 占位写入
-            console.log(`[feishu] Found new bot sender with app_id=${id}, writing placeholder to config`);
+            this.logger(`Found new bot sender with app_id=${id}, writing placeholder to config`);
             this.updateChatMember(conversationId, id, 'bot', { appId: id });
           }
         }
@@ -975,7 +981,7 @@ export class FeishuClient implements Channel {
     await Promise.all(
       [...memberQueries.entries()].map(([openId, knownName]) =>
         this.getMemberInfo(openId, conversationId, knownName).catch(error => {
-          console.error(`[feishu] Failed to resolve member info for ${openId}:`, error);
+          this.logger(`Failed to resolve member info for ${openId}: ${error}`);
         })
       )
     );
@@ -1032,7 +1038,7 @@ export class FeishuClient implements Channel {
     const conversationId = message.chat_id;
     const historySize = 10; // 固定 10 条历史消息
 
-    console.log(`[feishu] Building context message: conversationId=${conversationId}, sender=${sender.sender_id?.open_id || '(unknown)'}, message="${messageText.substring(0, 100)}..."`);
+    this.logger(`Building context message: conversationId=${conversationId}, sender=${sender.sender_id?.open_id || '(unknown)'}, message="${messageText.substring(0, 100)}..."`);
 
     // 获取历史消息
     const history = await this.getChatHistory(conversationId, historySize);
@@ -1046,13 +1052,13 @@ export class FeishuClient implements Channel {
     const currentSenderMember = currentSenderMembers.find(m => m.openId === currentSenderId);
     const currentSenderName = currentSenderMember?.name || currentSenderId;
     const senderInfo = `${currentSenderName} (id: ${currentSenderId})`;
-    console.log(`[feishu] Current sender: id=${currentSenderId}, name=${currentSenderName}`);
+    this.logger(`Current sender: id=${currentSenderId}, name=${currentSenderName}`);
 
     // 从配置文件读取群成员列表，构建群成员信息段落
     let chatMembersSection = '';
     if (message.chat_type === 'group') {
       const chatMembers = this.getChatMembersFromConfig(conversationId);
-      console.log(`[feishu] Chat members from config: chatId=${conversationId}, count=${chatMembers.length}`);
+      this.logger(`Chat members from config: chatId=${conversationId}, count=${chatMembers.length}`);
       if (chatMembers.length > 0) {
         chatMembersSection = `### 👥 群成员信息（共 ${chatMembers.length} 人，来自历史消息记录）
 
@@ -1082,16 +1088,16 @@ ${chatMembers.map((member, index) => {
     const templateDir = path.join(homeDir, '.claudetalk');
     const templatePath = path.join(templateDir, 'context-message.template');
     
-    console.log(`[feishu] Template path: ${templatePath}`);
-    console.log(`[feishu] __dirname: ${__dirname}`);
+    this.logger(`Template path: ${templatePath}`);
+    this.logger(`__dirname: ${__dirname}`);
     
     // 每次都检查并更新模板文件，确保使用最新版本
-    const sourceTemplatePath = path.join(__dirname, './context-message.template');
-    console.log(`[feishu] Source template path: ${sourceTemplatePath}`);
-    console.log(`[feishu] Source template exists: ${fs.existsSync(sourceTemplatePath)}`);
+    const sourceTemplatePath = path.join(__dirname, './feishu/context-message.template');
+    this.logger(`Source template path: ${sourceTemplatePath}`);
+    this.logger(`Source template exists: ${fs.existsSync(sourceTemplatePath)}`);
     
     if (!fs.existsSync(sourceTemplatePath)) {
-      console.error(`[feishu] Source template not found at ${sourceTemplatePath}`);
+      this.logger(`Source template not found at ${sourceTemplatePath}`);
       throw new Error(`Template file not found at ${sourceTemplatePath}`);
     }
     
@@ -1102,14 +1108,14 @@ ${chatMembers.map((member, index) => {
     
     // 每次都复制最新的模板文件，覆盖旧版本
     fs.copyFileSync(sourceTemplatePath, templatePath);
-    console.log(`[feishu] Copied template file to ${templatePath}`);
+    this.logger(`Copied template file to ${templatePath}`);
     
     const templateContent = fs.readFileSync(templatePath, 'utf-8');
 
     // 构建 mentions 段落
     const currentMentions = message.mentions || [];
-    console.log(`[feishu] Current message mentions: ${currentMentions.length} people`);
-    console.log(`[feishu] Mentions data: ${JSON.stringify(currentMentions)}`);
+    this.logger(`Current message mentions: ${currentMentions.length} people`);
+    this.logger(`Mentions data: ${JSON.stringify(currentMentions)}`);
     const mentionsSection = currentMentions.length > 0
       ? `- **提及了**:\n${currentMentions.map((m) => {
           const mentionOpenId = m.id?.open_id || '';
@@ -1154,7 +1160,7 @@ ${chatMembers.map((member, index) => {
         }).join('\n\n')
       : '（暂无历史消息）';
 
-    console.log(`[feishu] Context built: profileName="${this.config.profileName || '(none)'}", historySize=${historySize}, historyCount=${filteredHistory.length}`);
+    this.logger(`Context built: profileName="${this.config.profileName || '(none)'}", historySize=${historySize}, historyCount=${filteredHistory.length}`);
 
     // 替换模板变量
     const result = templateContent
@@ -1166,7 +1172,7 @@ ${chatMembers.map((member, index) => {
       .replace(/\{\{historySection\}\}/g, historySection)
       .replace(/\{\{chatMembersSection\}\}/g, chatMembersSection);
 
-    console.log(`[feishu] Final context message length: ${result.length} chars`);
+    this.logger(`Final context message length: ${result.length} chars`);
     return result;
   }
 
@@ -1203,9 +1209,11 @@ ${chatMembers.map((member, index) => {
     isGroup: boolean
   ): Promise<FeishuSendMessageResponse> {
     const accessToken = await this.getAccessToken();
-    // 无论私聊还是群聊，conversationId 都是 chat_id（oc_ 开头）
-    // 飞书私聊的 p2p 会话也有 chat_id，统一用 chat_id 类型发送
-    const receiveIdType = 'chat_id';
+    // 根据 receiverId 前缀自动判断 receive_id_type：
+    // - ou_ 开头：用户 open_id（上线通知等直接发给用户的场景）
+    // - oc_ 开头：群聊 chat_id
+    // - 其他（如 p2p 私聊 chat_id）：兜底用 chat_id
+    const receiveIdType = receiverId.startsWith('ou_') ? 'open_id' : 'chat_id';
     void isGroup; // isGroup 保留参数兼容性，实际不影响发送类型
 
     const requestBody = {
@@ -1215,13 +1223,13 @@ ${chatMembers.map((member, index) => {
     };
 
     // 打印完整的机器人回复消息，便于定位问题
-    console.error('[feishu] ===== Bot Reply Message (Text) =====');
-    console.error('[feishu] Receiver ID:', receiverId);
-    console.error('[feishu] Receive ID Type:', receiveIdType);
-    console.error('[feishu] Message Type: text');
-    console.error('[feishu] Content:', content);
-    console.error('[feishu] Full Request Body:', JSON.stringify(requestBody, null, 2));
-    console.error('[feishu] =====================================');
+    this.logger('[feishu] ===== Bot Reply Message (Text) =====');
+    this.logger(`Receiver ID: ${receiverId}`);
+    this.logger(`Receive ID Type: ${receiveIdType}`);
+    this.logger('[feishu] Message Type: text');
+    this.logger(`Content: ${content}`);
+    this.logger(`Full Request Body: ${JSON.stringify(requestBody, null, 2)}`);
+    this.logger('[feishu] =====================================');
 
     const response = await fetch(
       `${FEISHU_API_BASE}/im/v1/messages?receive_id_type=${receiveIdType}`,
@@ -1274,7 +1282,7 @@ ${chatMembers.map((member, index) => {
       throw new Error(`Failed to add reaction to message ${messageId}: ${data.msg}`);
     }
 
-    console.error(`[feishu] Added reaction ${emojiType} to message ${messageId}`);
+    this.logger(`Added reaction ${emojiType} to message ${messageId}`);
   }
 }
 

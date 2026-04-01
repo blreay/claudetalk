@@ -7,12 +7,10 @@ import { spawn } from 'child_process'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { ChannelType, ClaudeTalkConfig } from '../types.js'
+import { createLogger, log } from './logger.js'
 
-// ========== 日志 ==========
-
-export function log(msg: string): void {
-  console.error(`[${new Date().toISOString()}] ${msg}`)
-}
+// Re-export for index.ts compatibility
+export { createLogger, log } from './logger.js'
 
 // ========== Session 持久化 ==========
 // session 文件存放在工作目录下的 .claudetalk-sessions.json
@@ -58,7 +56,6 @@ function loadSessionMap(workDir: string): Map<string, SessionEntry> {
         entries.set(key, entry)
       }
     }
-    log(`[session] Loaded ${entries.size} sessions from ${sessionFile}`)
     return entries
   } catch (error) {
     log(`[session] Failed to load sessions: ${error}`)
@@ -71,7 +68,6 @@ function saveSessionMap(workDir: string, sessionMap: Map<string, SessionEntry>):
   try {
     const entries = Object.fromEntries(sessionMap)
     writeFileSync(sessionFile, JSON.stringify(entries, null, 2) + '\n', 'utf-8')
-    log(`[session] Saved ${sessionMap.size} sessions to ${sessionFile}`)
   } catch (error) {
     log(`[session] Failed to save sessions: ${error}`)
   }
@@ -124,15 +120,25 @@ export function clearSession(
 }
 
 /**
- * 找当前 workDir 下最近活跃的私聊会话，用于发上线通知
+ * 找当前 workDir、channel、profile 下最近活跃的私聊会话，用于发上线通知
+ * @param workDir - 工作目录
+ * @param channel - 消息通道类型，避免跨 channel 通知
+ * @param profile - profile 名称，避免同一 channel 下不同飞书应用（AppId 不同）互相通知
  */
-export function findLastActivePrivateSession(workDir: string): SessionEntry | null {
+export function findLastActivePrivateSession(
+  workDir: string,
+  channel: ChannelType,
+  profile?: string
+): SessionEntry | null {
   const sessionMap = getSessionMap(workDir)
   let latestEntry: SessionEntry | null = null
   for (const [key, entry] of sessionMap) {
     const parts = key.split('|')
     if (parts[1] !== workDir) continue
     if (entry.isGroup) continue
+    if (entry.channel !== channel) continue
+    // 过滤 profile：同一 channel 下不同飞书应用的 open_id 不能互用
+    if (profile && parts[2] !== profile) continue
     if (!latestEntry || entry.lastActiveAt > latestEntry.lastActiveAt) {
       latestEntry = entry
     }
@@ -242,6 +248,7 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
     processedMessage,
   } = options
 
+  const logger = createLogger(profile)
   const sessionMap = getSessionMap(workDir)
   const sessionKey = getSessionKey(conversationId, workDir, profile, channel)
   const existingEntry = sessionMap.get(sessionKey)
@@ -256,7 +263,7 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
   if (existingSessionId && existingEntry) {
     // 配置变化时清除旧 session，重建
     if (existingEntry.subagentEnabled !== currentSubagentEnabled) {
-      log(`[session] Config changed for profile=${profile} (subagentEnabled: ${existingEntry.subagentEnabled} -> ${currentSubagentEnabled}), clearing old session`)
+      logger(`[session] Config changed: subagentEnabled ${existingEntry.subagentEnabled} -> ${currentSubagentEnabled}, clearing old session`)
       sessionMap.delete(sessionKey)
       saveSessionMap(workDir, sessionMap)
       return callClaude(options)
@@ -278,9 +285,9 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
   }
 
   if (existingSessionId) {
-    log(`[claude] Resuming session: claude ${args.join(' ')}, cwd=${workDir}`)
+    logger(`[claude] Resuming session: conversationId=${conversationId}`)
   } else {
-    log(`[claude] New session: claude ${args.join(' ')}, cwd=${workDir}`)
+    logger(`[claude] New session: conversationId=${conversationId}, subagentEnabled=${currentSubagentEnabled}`)
   }
 
   return new Promise((resolve, reject) => {
@@ -303,14 +310,10 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
       profile && currentSubagentEnabled
         ? `Use the ${profile} agent to handle this: ${baseMessage}`
         : baseMessage
-    log(`[claude] ===== FULL MESSAGE TO CLAUDE (${actualMessage.length} chars) =====\n${actualMessage}\n[claude] ===== END OF MESSAGE =====`)
     child.stdin.write(actualMessage)
     child.stdin.end()
 
     child.on('close', (code: number | null) => {
-      log(`[claude] Process exited with code ${code}`)
-      if (stdout) log(`[claude] stdout (${stdout.length} chars): ${stdout}`)
-      if (stderr) log(`[claude] stderr (${stderr.length} chars): ${stderr}`)
 
       if (code !== 0) {
         const isSessionInvalid =
@@ -320,7 +323,7 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
           stderr.includes('Session not found') ||
           stderr.includes('--resume')
         if (isSessionInvalid) {
-          log(`[claude] Session invalid, clearing and retrying`)
+          logger(`[claude] Session invalid, clearing and retrying`)
           sessionMap.delete(sessionKey)
           saveSessionMap(workDir, sessionMap)
           callClaude({ ...options, channel }).then(resolve).catch(reject)
@@ -350,7 +353,7 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
         }
 
         const response = JSON.parse(lastJsonLine) as ClaudeResponse
-        log(`[claude] Response: session_id=${response.session_id}, duration=${response.duration_ms}ms`)
+        logger(`[claude] Done: duration=${response.duration_ms}ms, session_id=${response.session_id}`)
 
         if (response.session_id) {
           sessionMap.set(sessionKey, {
@@ -363,7 +366,6 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
             channel,
           })
           saveSessionMap(workDir, sessionMap)
-          log(`[claude] Saved session for sessionKey=${sessionKey}`)
         }
 
         if (response.is_error) {
@@ -373,13 +375,13 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
 
         resolve(response.result || stdout.trim())
       } catch (parseError) {
-        log(`[claude] Failed to parse JSON, returning raw output: ${parseError}`)
+        logger(`[claude] Failed to parse JSON, returning raw output: ${parseError}`)
         resolve(stdout.trim())
       }
     })
 
     child.on('error', (error: Error) => {
-      log(`[claude] Spawn error: ${error.message}`)
+      logger(`[claude] Spawn error: ${error.message}`)
       reject(error)
     })
   })

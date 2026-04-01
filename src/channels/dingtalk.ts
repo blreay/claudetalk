@@ -14,6 +14,7 @@ import type {
   DingTalkInboundCallback,
 } from '../types.js';
 import { registerChannel } from './registry.js';
+import { createLogger } from '../core/logger.js';
 
 const DINGTALK_API_BASE = 'https://api.dingtalk.com';
 const DINGTALK_STREAM_URL = process.env.DINGTALK_STREAM_URL || 'wss://dingtalk-stream.dingtalk.com/connect';
@@ -54,9 +55,11 @@ export class DingTalkClient implements Channel {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private isManuallyClosed: boolean = false;
   private reconnectDelayMs: number = 3000;
+  private readonly logger: (msg: string) => void;
 
   constructor(config: DingTalkChannelConfig) {
     this.config = config;
+    this.logger = createLogger('dingtalk', (config as unknown as Record<string, string>).profileName);
   }
 
   /**
@@ -81,7 +84,7 @@ export class DingTalkClient implements Channel {
     try {
       await this.sendPrivateMessage(userId, notifyText, 'sampleText');
     } catch (error) {
-      console.error(`[notify] Failed to send online notification: ${error}`);
+      this.logger(`[notify] Failed to send online notification: ${error}`);
     }
   }
 
@@ -127,9 +130,9 @@ export class DingTalkClient implements Channel {
    * 获取 Stream 连接票据
    */
   private async getStreamTicket(): Promise<DingTalkStreamTicketResponse> {
-    console.error('[getStreamTicket] Fetching access token...');
+    this.logger('[getStreamTicket] Fetching access token...');
     const accessToken = await this.getAccessToken();
-    console.error('[getStreamTicket] Access token obtained');
+    this.logger('[getStreamTicket] Access token obtained');
 
     const requestBody = {
       clientId: this.config.clientId,
@@ -147,7 +150,7 @@ export class DingTalkClient implements Channel {
       ua: 'claude-code-dingtalk-channel/0.1.0',
     };
 
-    console.error('[getStreamTicket] Requesting stream ticket...');
+    this.logger('[getStreamTicket] Requesting stream ticket...');
     const response = await fetch(
       `${DINGTALK_API_BASE}/v1.0/gateway/connections/open`,
       {
@@ -161,13 +164,13 @@ export class DingTalkClient implements Channel {
     );
 
     const data = await response.json() as { endpoint: string; ticket: string; errcode?: number; errmsg?: string };
-    console.error('[getStreamTicket] Response:', { status: response.status, data });
+    this.logger('[getStreamTicket] Response: ' + JSON.stringify({ status: response.status, data }));
 
     if (data.errcode && data.errcode !== 0) {
       throw new Error(`Failed to get stream ticket: ${data.errmsg}`);
     }
 
-    console.error('[getStreamTicket] Stream ticket obtained:', { endpoint: data.endpoint, ticket: data.ticket?.substring(0, 20) + '...' });
+    this.logger('[getStreamTicket] Stream ticket obtained: ' + JSON.stringify({ endpoint: data.endpoint, ticket: data.ticket?.substring(0, 20) + '...' }));
     return { endpoint: data.endpoint, ticket: data.ticket };
   }
 
@@ -183,7 +186,7 @@ export class DingTalkClient implements Channel {
         '  export DINGTALK_CLIENT_SECRET=your_app_secret'
       );
     }
-    console.error('Connecting to DingTalk Stream...');
+    this.logger('Connecting to DingTalk Stream...');
 
     this.isManuallyClosed = false;
     this.reconnectDelayMs = 3000;
@@ -205,7 +208,7 @@ export class DingTalkClient implements Channel {
       this.ws.close();
       this.ws = null;
     }
-    console.error('DingTalk Stream stopped');
+    this.logger('DingTalk Stream stopped');
   }
 
   /**
@@ -215,14 +218,14 @@ export class DingTalkClient implements Channel {
     const { endpoint, ticket } = await this.getStreamTicket();
 
     const wsUrl = `${endpoint}?ticket=${encodeURIComponent(ticket)}`;
-    console.error(`Connecting to DingTalk Stream endpoint: ${endpoint}`);
+    this.logger(`Connecting to DingTalk Stream endpoint: ${endpoint}`);
 
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(wsUrl);
       this.ws = ws;
 
       ws.onopen = () => {
-        console.error('DingTalk Stream connected');
+        this.logger('DingTalk Stream connected');
         // 重置重连延迟
         this.reconnectDelayMs = 3000;
         resolve();
@@ -233,26 +236,26 @@ export class DingTalkClient implements Channel {
           const frame = JSON.parse(event.data as string) as DingTalkStreamFrame;
           await this.handleStreamFrame(ws, frame);
         } catch (error) {
-          console.error(`Failed to handle stream frame: ${error}`);
+          this.logger(`Failed to handle stream frame: ${error}`);
         }
       };
 
       ws.onerror = (error) => {
-        console.error(`DingTalk Stream WebSocket error:`, error);
-        console.error(`[ws.onerror] Error type:`, (error as any)?.type);
-        console.error(`[ws.onerror] Error message:`, (error as any)?.message);
+        this.logger('DingTalk Stream WebSocket error: ' + JSON.stringify(error));
+        this.logger(`[ws.onerror] Error type: ${(error as any)?.type}`);
+        this.logger(`[ws.onerror] Error message: ${(error as any)?.message}`);
         // 错误不 reject，等待 onclose 处理重连
       };
 
       ws.onclose = (event) => {
-        console.error(`DingTalk Stream disconnected: code=${event.code}, reason=${event.reason}`);
+        this.logger(`DingTalk Stream disconnected: code=${event.code}, reason=${event.reason}`);
         this.ws = null;
 
         // 如果不是手动关闭，则自动重连
         // 重置退避延迟，避免之前退避到最大值后断线重连还要等很久
         if (!this.isManuallyClosed) {
           this.reconnectDelayMs = 3000;
-          console.error(`[ws.onclose] Scheduling reconnect in ${this.reconnectDelayMs}ms...`);
+          this.logger(`[ws.onclose] Scheduling reconnect in ${this.reconnectDelayMs}ms...`);
           this.reconnectTimer = setTimeout(() => {
             this.startReconnectLoop();
           }, this.reconnectDelayMs);
@@ -267,20 +270,20 @@ export class DingTalkClient implements Channel {
   private startReconnectLoop(): void {
     const attemptReconnect = async (): Promise<void> => {
       try {
-        console.error(`[reconnect] Attempting to connect...`);
+        this.logger(`[reconnect] Attempting to connect...`);
         await this.connectStream();
-        console.error(`[reconnect] Connected successfully`);
+        this.logger(`[reconnect] Connected successfully`);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[reconnect] Reconnect failed: ${errorMessage}`);
-        console.error(`[reconnect] Error details:`, error);
+        this.logger(`[reconnect] Reconnect failed: ${errorMessage}`);
+        this.logger(`[reconnect] Error details: ${JSON.stringify(error)}`);
         
         // 指数退避，最大 60 秒
         this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 60000);
         
         // 继续尝试重连
         if (!this.isManuallyClosed) {
-          console.error(`[reconnect] Will retry in ${this.reconnectDelayMs}ms...`);
+          this.logger(`[reconnect] Will retry in ${this.reconnectDelayMs}ms...`);
           this.reconnectTimer = setTimeout(attemptReconnect, this.reconnectDelayMs);
         }
       }
@@ -294,7 +297,7 @@ export class DingTalkClient implements Channel {
    */
   private async handleStreamFrame(ws: WebSocket, frame: DingTalkStreamFrame): Promise<void> {
     const { type, headers, data } = frame;
-    console.error(`[stream] frame: type=${type}, topic=${headers?.topic}, data=${data?.substring(0, 200)}`);
+    this.logger(`[stream] frame: type=${type}, topic=${headers?.topic}, data=${data?.substring(0, 200)}`);
 
     // 回复 ACK
     const ack = {
@@ -328,7 +331,7 @@ export class DingTalkClient implements Channel {
           const callback = JSON.parse(data) as DingTalkInboundCallback;
           await this.handleInboundMessage(callback);
         } catch (error) {
-          console.error(`Failed to parse inbound message: ${error}`);
+          this.logger(`Failed to parse inbound message: ${error}`);
         }
       });
       return;
@@ -348,13 +351,13 @@ export class DingTalkClient implements Channel {
     if (isGroup) {
       const groupPolicy = this.config.groupPolicy || 'open';
       if (groupPolicy === 'disabled') {
-        console.error('Group chat is disabled, ignoring message');
+        this.logger('Group chat is disabled, ignoring message');
         return;
       }
       if (groupPolicy === 'allowlist') {
         const groupAllowFrom = this.config.groupAllowFrom || this.config.allowFrom || [];
         if (!groupAllowFrom.includes(callback.senderId)) {
-          console.error(`Sender ${callback.senderId} not in group allowlist, ignoring`);
+          this.logger(`Sender ${callback.senderId} not in group allowlist, ignoring`);
           return;
         }
       }
@@ -364,7 +367,7 @@ export class DingTalkClient implements Channel {
       if (dmPolicy === 'allowlist') {
         const allowFrom = this.config.allowFrom || [];
         if (!allowFrom.includes(callback.senderId)) {
-          console.error(`Sender ${callback.senderId} not in allowlist, ignoring`);
+          this.logger(`Sender ${callback.senderId} not in allowlist, ignoring`);
           return;
         }
       }
@@ -386,11 +389,11 @@ export class DingTalkClient implements Channel {
     }
 
     if (!messageText.trim()) {
-      console.error('Empty message content, ignoring');
+      this.logger('Empty message content, ignoring');
       return;
     }
 
-    console.error(`Received message from ${callback.senderId} in ${callback.conversationId}: ${messageText}`);
+    this.logger(`Received message from ${callback.senderId} in ${callback.conversationId}: ${messageText}`);
 
     if (this.channelMessageHandler) {
       const context: ChannelMessageContext = {
