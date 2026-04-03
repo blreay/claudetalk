@@ -9,6 +9,7 @@ import type {
   Channel,
   ChannelMessageContext,
   DingTalkChannelConfig,
+  DingTalkChatMember,
   DingTalkTokenResponse,
   DingTalkSendResponse,
   AICardInstance,
@@ -79,6 +80,12 @@ export class DingTalkClient implements Channel {
   private processedPeerIds = new Set<string>();
   // 私聊会话 ID → 用户 open_id 映射缓存（钉钉私聊 conversationId 是会话ID，发送时需要用户 open_id）
   private privateSenderCache = new Map<string, string>();
+  // 心跳超时检测：钉钉有时静默断连（不发 close 帧），需要主动检测并重连
+  // 注意：钉钉 Stream 连接建立后有约 60 秒的"预热期"，期间不会推送任何帧（包括 ping）
+  // 因此超时时间需要设置得比预热期更长，避免误判为断连
+  private lastFrameAt: number = 0;
+  private heartbeatWatchdog: ReturnType<typeof setInterval> | null = null;
+  private readonly HEARTBEAT_TIMEOUT_MS = 3 * 60 * 1000; // 3分钟无帧则认为连接已断
 
   constructor(config: DingTalkChannelConfig) {
     this.config = config;
@@ -86,6 +93,8 @@ export class DingTalkClient implements Channel {
     const workDir = config.workDir || process.cwd();
     this.claudetalkDir = path.join(workDir, '.claudetalk');
     this.logger = createLogger('dingtalk', this.profileName);
+    // 启动时立即将自己注册到 chat-members.json 的 _bot_self，确保 knownProfiles 能读到所有已启动的机器人
+    this.registerSelfToChatMembers();
   }
 
   /**
@@ -315,6 +324,9 @@ export class DingTalkClient implements Channel {
     const systemPromptValue = subagentEnabled ? '' : (this.config.systemPrompt || '');
     this.logger(`subagentEnabled=${subagentEnabled}, role header=${subagentEnabled ? 'skipped (agent.md)' : 'injected'}`);
 
+    // 构建群成员信息段落（从 bot-registry.json 读取各机器人的真实 chatbotUserId）
+    const chatMembersSection = this.buildChatMembersSection();
+
     // 替换模板变量
     const result = templateContent
       .replace(/\{\{profileName\}\}/g, profileNameValue)
@@ -322,7 +334,8 @@ export class DingTalkClient implements Channel {
       .replace(/\{\{senderInfo\}\}/g, senderInfo)
       .replace(/\{\{messageText\}\}/g, messageText)
       .replace(/\{\{mentionsSection\}\}/g, mentionsSection)
-      .replace(/\{\{historySection\}\}/g, historySection);
+      .replace(/\{\{historySection\}\}/g, historySection)
+      .replace(/\{\{chatMembersSection\}\}/g, chatMembersSection);
 
     this.logger(`Context message built: length=${result.length}, historyCount=${historyWithoutCurrent.length}`);
     return result;
@@ -340,7 +353,7 @@ export class DingTalkClient implements Channel {
         '  export DINGTALK_CLIENT_SECRET=your_app_secret'
       );
     }
-    this.logger('Connecting to DingTalk Stream...');
+    this.logger(`Connecting to DingTalk Stream... clientId=${this.config.clientId}`);
 
     this.isManuallyClosed = false;
     this.reconnectDelayMs = 3000;
@@ -389,10 +402,14 @@ export class DingTalkClient implements Channel {
         this.logger('DingTalk Stream connected');
         // 重置重连延迟
         this.reconnectDelayMs = 3000;
+        // 注意：钉钉 Stream 连接建立后不会发送任何帧（包括 ping），连接是稳定的
+        // 不启动 watchdog，避免误杀健康连接；依赖 ws.onerror 和 ws.onclose 处理真正的断连
         resolve();
       };
 
       ws.onmessage = async (event) => {
+        // 每次收到帧都更新时间戳（包括心跳 ping）
+        this.lastFrameAt = Date.now();
         try {
           const frame = JSON.parse(event.data as string) as DingTalkStreamFrame;
           await this.handleStreamFrame(ws, frame);
@@ -411,18 +428,83 @@ export class DingTalkClient implements Channel {
       ws.onclose = (event) => {
         this.logger(`DingTalk Stream disconnected: code=${event.code}, reason=${event.reason}`);
         this.ws = null;
+        this.stopHeartbeatWatchdog();
 
-        // 如果不是手动关闭，则自动重连
-        // 重置退避延迟，避免之前退避到最大值后断线重连还要等很久
         if (!this.isManuallyClosed) {
-          this.reconnectDelayMs = 3000;
-          this.logger(`[ws.onclose] Scheduling reconnect in ${this.reconnectDelayMs}ms...`);
-          this.reconnectTimer = setTimeout(() => {
+          // code=1006：异常断连（WebSocket 握手失败、网络中断等），使用指数退避避免雪崩
+          // code=1005：服务器正常关闭（如空闲超时），立即重连以减少消息丢失窗口
+          // 其他 code：保守起见也使用退避
+          const isAbnormalClose = event.code === 1006;
+          if (isAbnormalClose) {
+            this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 30000);
+            this.logger(`[ws.onclose] Abnormal close (code=${event.code}), reconnecting in ${this.reconnectDelayMs}ms...`);
+            this.reconnectTimer = setTimeout(() => {
+              this.startReconnectLoop();
+            }, this.reconnectDelayMs);
+          } else {
+            // 正常关闭（服务器主动断开），重置退避并立即重连
+            this.reconnectDelayMs = 3000;
+            this.logger(`[ws.onclose] Normal close (code=${event.code}), reconnecting immediately...`);
             this.startReconnectLoop();
-          }, this.reconnectDelayMs);
+          }
         }
       };
     });
+  }
+
+  /**
+   * 启动心跳 watchdog：
+   * 1. 每 30 秒主动发送一次 ping 帧，防止钉钉服务器因空闲超时（约 60 秒）断开连接
+   * 2. 如果超过 3 分钟没有收到任何帧，则认为连接已死，主动断开并重连
+   */
+  private startHeartbeatWatchdog(ws: WebSocket): void {
+    this.stopHeartbeatWatchdog();
+    this.heartbeatWatchdog = setInterval(() => {
+      const silentMs = Date.now() - this.lastFrameAt;
+
+      // 超过 3 分钟无帧，认为连接已死，强制重连
+      if (silentMs > this.HEARTBEAT_TIMEOUT_MS) {
+        this.logger(`[watchdog] No frame received for ${Math.round(silentMs / 1000)}s, forcing reconnect...`);
+        this.stopHeartbeatWatchdog();
+        try {
+          ws.close();
+        } catch {
+          this.ws = null;
+          if (!this.isManuallyClosed) {
+            this.reconnectDelayMs = 3000;
+            this.startReconnectLoop();
+          }
+        }
+        return;
+      }
+
+      // 主动发送 ping，防止钉钉服务器空闲超时断开（钉钉空闲超时约 60 秒）
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({
+            type: 'SYSTEM',
+            headers: {
+              topic: 'ping',
+              messageId: `client-ping-${Date.now()}`,
+              time: String(Date.now()),
+            },
+            data: 'ping',
+          }));
+        } catch (error) {
+          this.logger(`[watchdog] Failed to send ping: ${error}`);
+        }
+      }
+    }, 30 * 1000);
+  }
+
+  /**
+   * 停止心跳 watchdog
+   */
+  private stopHeartbeatWatchdog(): void {
+    if (this.heartbeatWatchdog) {
+      clearInterval(this.heartbeatWatchdog);
+      this.heartbeatWatchdog = null;
+    }
   }
 
   /**
@@ -505,8 +587,200 @@ export class DingTalkClient implements Channel {
   /**
    * 处理收到的钉钉消息，转发给 Claude Code
    */
+  // ========== chat-members.json 管理（对齐飞书格式） ==========
+
+  /** chat-members.json 中单个成员的结构 */
+  private get chatMembersPath(): string {
+    return path.join(this.claudetalkDir, 'dingtalk', 'chat-members.json');
+  }
+
+  /** 读取 chat-members.json，返回完整配置对象 */
+  private loadChatMembersConfig(): Record<string, DingTalkChatMember[]> {
+    try {
+      if (fs.existsSync(this.chatMembersPath)) {
+        return JSON.parse(fs.readFileSync(this.chatMembersPath, 'utf-8')) as Record<string, DingTalkChatMember[]>;
+      }
+    } catch {
+      // 读取失败则返回空对象
+    }
+    return {};
+  }
+
+  /** 原子写入 chat-members.json */
+  private saveChatMembersConfig(config: Record<string, DingTalkChatMember[]>): void {
+    const dir = path.dirname(this.chatMembersPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(this.chatMembersPath, JSON.stringify(config, null, 2), 'utf-8');
+  }
+
+  /**
+   * 启动时将自己注册到 chat-members.json 的 _bot_self 列表
+   * 使用 clientId（AppKey）作为唯一标识，displayName 从 agent.md 读取
+   */
+  private registerSelfToChatMembers(): void {
+    const config = this.loadChatMembersConfig();
+    const botSelf: DingTalkChatMember[] = config['_bot_self'] || [];
+    const displayName = this.readAgentDisplayName(this.profileName);
+    const clientId = this.config.clientId;
+
+    const existing = botSelf.find((m) => m.profileName === this.profileName);
+    if (existing) {
+      // 更新 displayName（agent.md 可能被修改）
+      if (existing.name !== displayName || existing.clientId !== clientId) {
+        existing.name = displayName;
+        existing.clientId = clientId;
+        config['_bot_self'] = botSelf;
+        this.saveChatMembersConfig(config);
+        this.logger(`[chat-members] Updated _bot_self entry for profile ${this.profileName}`);
+      }
+      return;
+    }
+
+    botSelf.push({ name: displayName, type: 'bot', clientId, profileName: this.profileName });
+    config['_bot_self'] = botSelf;
+    this.saveChatMembersConfig(config);
+    this.logger(`[chat-members] Registered self to _bot_self: profile=${this.profileName}, name=${displayName}, clientId=${clientId}`);
+  }
+
+  /**
+   * 收到消息时，将发送者信息写入对应群的 chat-members.json
+   * 机器人：type=bot，clientId=chatbotUserId（加密ID），profileName=profile名称
+   * 真实用户：type=user，staffId=senderStaffId，senderId=senderId
+   */
+  private updateChatMemberFromCallback(callback: DingTalkInboundCallback): void {
+    if (callback.conversationType !== '2') return; // 只处理群聊
+
+    const conversationId = callback.conversationId;
+    const config = this.loadChatMembersConfig();
+    const members: DingTalkChatMember[] = config[conversationId] || [];
+
+    // 更新当前机器人自身（用 chatbotUserId 作为加密 ID）
+    if (callback.chatbotUserId) {
+      const botSelf = config['_bot_self'] || [];
+      const selfEntry = botSelf.find((m) => m.profileName === this.profileName);
+      const selfName = selfEntry?.name || this.readAgentDisplayName(this.profileName);
+
+      const existingBot = members.find((m) => m.type === 'bot' && m.profileName === this.profileName);
+      if (existingBot) {
+        const changed = existingBot.chatbotUserId !== callback.chatbotUserId || existingBot.name !== selfName;
+        if (changed) {
+          existingBot.chatbotUserId = callback.chatbotUserId;
+          existingBot.name = selfName;
+        }
+      } else {
+        members.push({
+          name: selfName,
+          type: 'bot',
+          clientId: this.config.clientId,
+          profileName: this.profileName,
+          chatbotUserId: callback.chatbotUserId,
+        });
+      }
+    }
+
+    // 更新消息发送者（真实用户）
+    const senderName = callback.senderId;
+    const existingUser = members.find((m) => m.type === 'user' && m.senderId === callback.senderId);
+    if (existingUser) {
+      if (existingUser.name !== senderName || existingUser.staffId !== callback.senderStaffId) {
+        existingUser.name = senderName;
+        existingUser.staffId = callback.senderStaffId;
+      }
+    } else {
+      const newUser: DingTalkChatMember = {
+        name: senderName,
+        type: 'user',
+        senderId: callback.senderId,
+      };
+      if (callback.senderStaffId) newUser.staffId = callback.senderStaffId;
+      members.push(newUser);
+    }
+
+    config[conversationId] = members;
+    this.saveChatMembersConfig(config);
+    this.logger(`[chat-members] Updated members for conversationId=${conversationId}`);
+  }
+
+  /**
+   * 从 chat-members.json 的 _bot_self 读取所有已注册的 profile 名称列表
+   */
+  private loadKnownProfilesFromChatMembers(): string[] {
+    const config = this.loadChatMembersConfig();
+    const botSelf = config['_bot_self'] || [];
+    return botSelf
+      .filter((m) => m.type === 'bot' && m.profileName)
+      .map((m) => m.profileName as string);
+  }
+
+  /**
+   * 从 agent.md 的第一个正文行（frontmatter 之后）提取机器人的中文名称
+   * 例如："你是一个AI论坛项目的**前端开发工程师（Frontend Engineer）**" → "前端开发工程师"
+   */
+  private readAgentDisplayName(profileName: string): string {
+    const workDir = this.config.workDir || process.cwd();
+    const agentMdPath = path.join(workDir, '.claude', 'agents', `${profileName}.md`);
+    try {
+      if (!fs.existsSync(agentMdPath)) return profileName;
+      const content = fs.readFileSync(agentMdPath, 'utf-8');
+      // 跳过 frontmatter（--- ... ---），找第一个非空正文行
+      const lines = content.split('\n');
+      let inFrontmatter = false;
+      let frontmatterEnded = false;
+      for (const line of lines) {
+        if (line.trim() === '---') {
+          if (!frontmatterEnded) {
+            inFrontmatter = !inFrontmatter;
+            if (!inFrontmatter) frontmatterEnded = true;
+            continue;
+          }
+        }
+        if (inFrontmatter) continue;
+        if (!line.trim()) continue;
+        // 提取 **中文名称** 格式的内容
+        const boldMatch = line.match(/\*\*([^（*]+)/);
+        if (boldMatch) {
+          return boldMatch[1].trim();
+        }
+        break;
+      }
+    } catch {
+      // 读取失败则返回 profileName
+    }
+    return profileName;
+  }
+
+  /**
+   * 构建群成员信息段落：
+   * - 机器人列表：从 bot-registry.json 读取，@ 时使用 @profileName 文本格式
+   * - 显示机器人的中文名称（从 agent.md 读取）
+   */
+  private buildChatMembersSection(): string {
+    const knownProfiles = this.loadKnownProfilesFromChatMembers();
+    if (knownProfiles.length === 0) {
+      return '';
+    }
+    const config = this.loadChatMembersConfig();
+    const botSelf = config['_bot_self'] || [];
+    const botLines = knownProfiles
+      .filter((profile) => profile !== this.profileName)
+      .map((profile) => {
+        const entry = botSelf.find((m) => m.profileName === profile);
+        const displayName = entry?.name || this.readAgentDisplayName(profile);
+        return `- **${displayName}**（@${profile}）: 使用 @${profile} 来触发`;
+      });
+    if (botLines.length === 0) {
+      return '';
+    }
+    return `### 👥 群成员信息（AI 机器人列表）\n\n${botLines.join('\n')}\n\n> **重要**：@ 机器人时直接使用 \`@profileName\` 文本格式（如 \`@front\`），系统会自动转换为带名称的 @ 标签展示。`;
+  }
+
   private async handleInboundMessage(callback: DingTalkInboundCallback): Promise<void> {
     const isGroup = callback.conversationType === '2';
+
+    // 更新 chat-members.json：记录当前机器人的 chatbotUserId 和消息发送者信息
+    this.updateChatMemberFromCallback(callback);
 
     // 群聊策略检查
     if (isGroup) {
@@ -554,7 +828,7 @@ export class DingTalkClient implements Channel {
       return;
     }
 
-    this.logger(`Received message from ${callback.senderId} in ${callback.conversationId}: ${messageText}`);
+    this.logger(`Received message from senderId=${callback.senderId}, senderStaffId=${callback.senderStaffId || '(empty)'}, conversationId=${callback.conversationId}, isGroup=${isGroup}: ${messageText}`);
 
     // 群聊消息写入历史记录
     if (isGroup) {
@@ -584,6 +858,13 @@ export class DingTalkClient implements Channel {
         this.privateSenderCache.set(callback.conversationId, callback.senderStaffId);
       }
 
+      // 先发送"收到"消息，让用户知道机器人已接收
+      try {
+        await this.sendMessage(callback.conversationId, '👍 收到，正在处理...', isGroup);
+      } catch (error) {
+        this.logger(`Failed to send "received" message: ${error}`);
+      }
+
       const context: ChannelMessageContext = {
         conversationId: callback.conversationId,
         senderId: callback.senderId,
@@ -607,10 +888,27 @@ export class DingTalkClient implements Channel {
   ): Promise<void> {
     const messageType = this.config.messageType || 'markdown';
 
+    // 群聊时，把 @profileName 替换成 <at id=profile>机器人名称</at> 格式，让消息更直观易读
+    // 例如：@front → <at id=front>前端开发工程师</at>
+    let displayContent = content;
+    if (isGroup) {
+      const knownProfiles = this.loadKnownProfilesFromChatMembers();
+      const chatMembersConfig = this.loadChatMembersConfig();
+      const botSelf = chatMembersConfig['_bot_self'] || [];
+      for (const profile of knownProfiles) {
+        const entry = botSelf.find((m) => m.profileName === profile);
+        const displayName = entry?.name || this.readAgentDisplayName(profile);
+        displayContent = displayContent.replace(
+          new RegExp(`@${profile}\\b`, 'g'),
+          `<at id=${profile}>${displayName}</at>`
+        );
+      }
+    }
+
     if (messageType === 'card' && this.config.cardTemplateId) {
-      await this.createAICard(conversationId, content);
+      await this.createAICard(conversationId, displayContent);
     } else {
-      await this.sendMarkdownMessage(conversationId, content, isGroup);
+      await this.sendMarkdownMessage(conversationId, displayContent, isGroup);
     }
 
     // 群聊：写入历史记录 + 解析 @标签写入 peer-message
@@ -622,7 +920,7 @@ export class DingTalkClient implements Channel {
         content,
       });
 
-      const knownProfiles = this.config.knownProfiles || [];
+      const knownProfiles = this.loadKnownProfilesFromChatMembers();
       if (knownProfiles.length > 0) {
         writePeerMessagesFromContent(
           this.claudetalkDir,
@@ -984,7 +1282,6 @@ registerChannel({
       profileName: config.profileName,
       workDir: config.workDir,
       systemPrompt: config.systemPrompt,
-      knownProfiles: config.knownProfiles ? JSON.parse(config.knownProfiles) : undefined,
     })
   },
 })

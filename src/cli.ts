@@ -684,14 +684,20 @@ ClaudeTalk - 通过钉钉/Discord 机器人与 Claude Code 对话
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
   console.log('')
 
-  // 并发启动所有 profile，每个 startBot 内部持有独立的 Channel 实例，互不干扰
-  await Promise.all(
-    profileNames.map((profileName) =>
-      startBot({ workDir, profile: profileName }).catch((error) => {
-        console.error(`❌ [${profileName}] 启动失败: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    )
+  // 错开启动所有 profile，每个 profile 间隔 1 秒，避免同时发出大量请求导致钉钉/飞书限流
+  // 启动后各 profile 独立运行，互不干扰
+  const startPromises = profileNames.map((profileName, index) =>
+    new Promise<void>((resolve) => {
+      setTimeout(() => {
+        startBot({ workDir, profile: profileName })
+          .catch((error) => {
+            console.error(`❌ [${profileName}] 启动失败: ${error instanceof Error ? error.message : String(error)}`)
+          })
+          .finally(resolve)
+      }, index * 1000)
+    })
   )
+  await Promise.all(startPromises)
 }
 
 main().catch((error) => {

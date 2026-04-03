@@ -119,17 +119,28 @@ export function removePeerMessages(
 
 /**
  * 解析消息内容中的 @机器人名称
- * 钉钉消息中 @机器人 的文本格式为：@机器人名称（空格分隔）
- * 例如："@ClaudeA 帮我分析一下这段代码"
- * 返回被@的名称列表
+ * 支持两种格式：
+ * 1. @profileName 文本格式：例如 "@front 帮我分析一下这段代码"
+ * 2. <at id=profile>名称</at> 标签格式：例如 "<at id=front>前端工程师</at>"
+ * 返回被@的 profile 名称列表
  */
 export function parseAtMentions(messageText: string): string[] {
-  const atPattern = /@(\S+)/g;
   const mentions: string[] = [];
+
+  // 格式1：<at id=profile>名称</at>
+  const atTagPattern = /<at\s+id=["']?(\S+?)["']?\s*>[^<]*<\/at>/g;
   let match: RegExpExecArray | null;
-  while ((match = atPattern.exec(messageText)) !== null) {
+  while ((match = atTagPattern.exec(messageText)) !== null) {
     mentions.push(match[1]);
   }
+
+  // 格式2：@profileName（排除已被 <at> 标签覆盖的部分）
+  const strippedText = messageText.replace(/<at\s[^>]*>.*?<\/at>/g, '');
+  const atPattern = /@(\S+)/g;
+  while ((match = atPattern.exec(strippedText)) !== null) {
+    mentions.push(match[1]);
+  }
+
   return mentions;
 }
 

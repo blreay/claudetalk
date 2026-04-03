@@ -3,6 +3,26 @@
  */
 
 // 钉钉 Channel 配置
+/**
+ * 钉钉 chat-members.json 中单个成员的结构（对齐飞书格式）
+ */
+export interface DingTalkChatMember {
+  /** 显示名称（机器人中文名 或 用户昵称） */
+  name: string;
+  /** 成员类型：bot | user */
+  type: 'bot' | 'user';
+  /** 机器人专有：AppKey（clientId），启动时写入 */
+  clientId?: string;
+  /** 机器人专有：profile 名称，用于 peer-message 匹配 */
+  profileName?: string;
+  /** 机器人专有：钉钉加密 chatbotUserId（$:LWCP_v1:$...），收到消息后更新 */
+  chatbotUserId?: string;
+  /** 真实用户专有：钉钉 senderId（加密 openId） */
+  senderId?: string;
+  /** 真实用户专有：钉钉 staffId（员工工号） */
+  staffId?: string;
+}
+
 export interface DingTalkChannelConfig {
   /** 应用的 AppKey (Client ID) */
   clientId: string;
@@ -34,8 +54,6 @@ export interface DingTalkChannelConfig {
   workDir?: string;
   /** 当前机器人的 profile 名称，用于 peer-message 文件命名和 @匹配 */
   profileName?: string;
-  /** 已知的其他机器人 profile 名称列表，用于 peer-message @匹配 */
-  knownProfiles?: string[];
   /** 机器人角色的系统提示词，用于 context-message.template 的 {{systemPrompt}} 变量 */
   systemPrompt?: string;
 }
@@ -102,6 +120,10 @@ export interface DingTalkInboundCallback {
   msgId: string;
   /** 会话类型: 1=单聊, 2=群聊 */
   conversationType: '1' | '2';
+  /** 机器人的加密 ID（格式：$:LWCP_v1:$...），用于 @ 机器人 */
+  chatbotUserId?: string;
+  /** 机器人所在企业 ID */
+  chatbotCorpId?: string;
   /** 文本消息内容 */
   text?: {
     content: string;
