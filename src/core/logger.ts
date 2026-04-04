@@ -33,7 +33,7 @@ export function initLogFile(workDir: string): void {
   logFileStream = fs.createWriteStream(logFilePath, { flags: 'a' })
   
   // 写入日志文件头部
-  const header = `\n${'='.repeat(80)}\n`
+  let header = `\n${'='.repeat(80)}\n`
   header += `ClaudeTalk Log Session Started: ${formatTimestamp()}\n`
   header += `${'='.repeat(80)}\n\n`
   logFileStream.write(header)
