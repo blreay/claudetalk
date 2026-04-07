@@ -628,20 +628,20 @@ async function setCcEngine(workDir: string, profile?: string, engine?: string): 
     const currentEngine = (rawConfig.profiles[targetProfile] as ProfileConfig).ccEngine || 'claude'
     console.log(`当前 profile [${targetProfile}] 的 ccEngine 设置为: ${currentEngine}`)
     console.log('')
-    console.log('用法: claudetalk --setcc <claude|cfuse> --profile <name>')
-    console.log('示例: claudetalk --setcc cfuse --profile default')
+    console.log('用法: claudetalk --setcc <claude|codefuse|codefuse-cc> --profile <name>')
+    console.log('示例: claudetalk --setcc codefuse --profile default')
     process.exit(0)
   }
 
   // 验证 engine 值
-  const validEngines = ['claude', 'cfuse']
+  const validEngines = ['claude', 'codefuse', 'codefuse-cc']
   if (!validEngines.includes(engine.toLowerCase())) {
     console.error(`❌ 无效的 ccEngine 值: ${engine}`)
     console.error(`可选值: ${validEngines.join(', ')}`)
     process.exit(1)
   }
 
-  const normalizedEngine = engine.toLowerCase() as 'claude' | 'cfuse'
+  const normalizedEngine = engine.toLowerCase() as 'claude' | 'codefuse' | 'codefuse-cc'
 
   // 更新配置
   rawConfig.profiles[targetProfile] = {
@@ -673,8 +673,8 @@ ClaudeTalk - 通过钉钉/Discord 机器人与 Claude Code 对话
   claudetalk --setup --profile <name>                  配置当前目录指定角色（交互式）
   claudetalk --setup auto                              自动配置多个角色（根据 ~/.claudetalk/agent_auto_config.json）
   claudetalk --setup edit                              编辑已有角色配置（支持修改 profile 名称）
-  claudetalk --setcc <claude|cfuse>                    设置 Claude 引擎（claude 或 cfuse）
-  claudetalk --setcc <claude|cfuse> --profile <name>   设置指定角色的 Claude 引擎
+  claudetalk --setcc <claude|codefuse|codefuse-cc>                    设置 Claude 引擎
+  claudetalk --setcc <claude|codefuse|codefuse-cc> --profile <name>   设置指定角色的 Claude 引擎
   claudetalk --help                                    显示帮助信息
 
 默认角色规则:

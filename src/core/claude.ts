@@ -337,9 +337,12 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
   const ccEngine = currentConfig?.ccEngine ?? 'claude'
 
   // 根据 ccEngine 决定使用的命令和参数
-  const isCfuse = ccEngine === 'cfuse'
-  const ccCommand = isCfuse ? 'cfuse' : 'claude'
-  const args = isCfuse
+  // codefuse 和 codefuse-cc 都使用 cfuse 命令
+  const isCodefuse = ccEngine === 'codefuse' || ccEngine === 'codefuse-cc'
+  const ccCommand = isCodefuse ? 'cfuse' : 'claude'
+  // 只有 codefuse-cc 需要在 args 最前面加 --cc
+  const needsCcFlag = ccEngine === 'codefuse-cc'
+  const args = needsCcFlag
     ? ['--cc', '-p', '--output-format', 'json', '--dangerously-skip-permissions']
     : ['-p', '--output-format', 'json', '--dangerously-skip-permissions']
 
@@ -368,9 +371,9 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
   }
 
   if (existingSessionId) {
-    logger(`[claude] Resuming session: conversationId=${conversationId}, ccEngine=${ccEngine}`)
+    logger(`[claude] Resuming session: conversationId=${conversationId}, ccEngine=${ccEngine}, ccCommand=${ccCommand}`)
   } else {
-    logger(`[claude] New session: conversationId=${conversationId}, ccEngine=${ccEngine}, subagentEnabled=${currentSubagentEnabled}`)
+    logger(`[claude] New session: conversationId=${conversationId}, ccEngine=${ccEngine}, ccCommand=${ccCommand}, subagentEnabled=${currentSubagentEnabled}`)
   }
 
   return new Promise((resolve, reject) => {
