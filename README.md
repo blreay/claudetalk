@@ -49,8 +49,8 @@ npm uninstall -g claudetalk
 ```bash
 cd /path/to/your/project
 claudetalk --setup
-#设置使用哪个引擎 cfuse或者claude
-claudetalk --setcc cfuse 或者 claudetalk --setcc claude
+#设置使用哪个引擎 codefuse或者claude
+claudetalk --setcc claude 或者 claudetalk --setcc codefuse 或者 claudetalk --setcc codefuse-cc
 ```
 
 如果不指定 `--profile`，会自动创建名为 `default` 的默认角色。也可以手动指定角色名：
@@ -193,7 +193,7 @@ ClaudeTalk 支持多种消息通道，选择你需要的通道进行配置：
         "FEISHU_APP_SECRET": "Dev 机器人 App Secret"
       },
       "systemPrompt": "你是全栈工程师，擅长 SQL 编写和架构设计",
-      "ccEngine": "cfuse"
+      "ccEngine": "codefuse-cc"
     }
   }
 }
