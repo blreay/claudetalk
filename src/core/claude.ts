@@ -334,8 +334,14 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
   const currentConfig = loadConfig(workDir, profile)
   const currentSubagentEnabled = currentConfig?.subagentEnabled ?? false
   const currentSystemPrompt = currentConfig?.systemPrompt
+  const ccEngine = currentConfig?.ccEngine ?? 'claude'
 
-  const args = ['-p', '--output-format', 'json', '--dangerously-skip-permissions']
+  // 根据 ccEngine 决定使用的命令和参数
+  const isCfuse = ccEngine === 'cfuse'
+  const ccCommand = isCfuse ? 'cfuse' : 'claude'
+  const args = isCfuse
+    ? ['--cc', '-p', '--output-format', 'json', '--dangerously-skip-permissions']
+    : ['-p', '--output-format', 'json', '--dangerously-skip-permissions']
 
   if (existingSessionId && existingEntry) {
     // 配置变化时清除旧 session，重建
@@ -362,13 +368,13 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
   }
 
   if (existingSessionId) {
-    logger(`[claude] Resuming session: conversationId=${conversationId}`)
+    logger(`[claude] Resuming session: conversationId=${conversationId}, ccEngine=${ccEngine}`)
   } else {
-    logger(`[claude] New session: conversationId=${conversationId}, subagentEnabled=${currentSubagentEnabled}`)
+    logger(`[claude] New session: conversationId=${conversationId}, ccEngine=${ccEngine}, subagentEnabled=${currentSubagentEnabled}`)
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn('claude', args, {
+    const child = spawn(ccCommand, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: workDir,
       env: { ...process.env },

@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "default": {
+      "channel": "dingtalk",
+      "dingtalk": {
+        "DINGTALK_CLIENT_ID": "test",
+        "DINGTALK_CLIENT_SECRET": "test"
+      },
+      "systemPrompt": "test",
+      "ccEngine": "claude"
+    }
+  }
+}

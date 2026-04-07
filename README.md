@@ -1,8 +1,6 @@
 # ClaudeTalk
 
-通过钉钉或飞书机器人与 Claude Code 对话。支持多轮会话，在聊天工具里即可使用 Claude Code 的全部能力。
-
-> ⚠️ **不建议使用钉钉**：钉钉机器人的消息推送不稳定，多个机器人实例同时运行时经常出现消息丢失、收不到消息等问题，多轮测试调整后，应该是钉钉的问题，无法通过代码解决，如果只启动一个agent的话，可以用钉钉，如果你需要多 Agent 协作，请优先选择飞书。
+通过钉钉或飞书机器人与 Claude Code或者CodeFuse Cli 对话。支持多轮会话，在聊天工具里即可使用 Claude Code/CodeFuse Cli 的全部能力。
 
 ## 前置条件
 
@@ -51,6 +49,8 @@ npm uninstall -g claudetalk
 ```bash
 cd /path/to/your/project
 claudetalk --setup
+#设置使用哪个引擎 cfuse或者claude
+claudetalk --setcc cfuse 或者 claudetalk --setcc claude
 ```
 
 如果不指定 `--profile`，会自动创建名为 `default` 的默认角色。也可以手动指定角色名：
@@ -192,7 +192,8 @@ ClaudeTalk 支持多种消息通道，选择你需要的通道进行配置：
         "FEISHU_APP_ID": "Dev 机器人 App ID",
         "FEISHU_APP_SECRET": "Dev 机器人 App Secret"
       },
-      "systemPrompt": "你是全栈工程师，擅长 SQL 编写和架构设计"
+      "systemPrompt": "你是全栈工程师，擅长 SQL 编写和架构设计",
+      "ccEngine": "cfuse"
     }
   }
 }
@@ -401,6 +402,10 @@ SubAgent 配置文件遵循 Claude Code 标准目录：
 ### 会话持久化
 
 每个会话的 Claude Code session_id 会自动保存到 `.claudetalk-sessions.json`。重启 ClaudeTalk 后，之前的多轮对话上下文会自动恢复。发送 `新会话` 或 `/new` 可清除指定会话的记忆。
+
+### 注意
+
+> ⚠️ **不建议使用钉钉**：钉钉机器人的stream消息推送不稳定，多个机器人实例同时运行时经常出现消息丢失、收不到消息等问题，多轮测试调整后，应该是钉钉的问题，无法通过代码解决，如果只启动一个agent的话，可以用钉钉，如果你需要多 Agent 协作，请优先选择飞书。
 
 ## License
 

@@ -576,6 +576,85 @@ async function createSubagentFile(
   console.log(`✅ SubAgent 文件已创建: ${agentFile}`)
 }
 
+// ========== ccEngine 设置 ==========
+
+function parseSetccArg(): { profile?: string; engine?: string } {
+  const setccIndex = process.argv.indexOf('--setcc')
+  if (setccIndex === -1) return {}
+
+  const next = process.argv[setccIndex + 1]
+  const engine = next && !next.startsWith('--') ? next : undefined
+
+  // 尝试获取 --profile 参数
+  const profileIndex = process.argv.indexOf('--profile')
+  const profile = profileIndex !== -1 ? process.argv[profileIndex + 1] : undefined
+
+  return { profile, engine }
+}
+
+async function setCcEngine(workDir: string, profile?: string, engine?: string): Promise<void> {
+  const targetFile = join(workDir, LOCAL_CONFIG_FILENAME)
+  const rawConfig = loadRawConfig(targetFile)
+
+  if (!rawConfig || !rawConfig.profiles) {
+    console.error('❌ 未找到配置文件，请先运行 claudetalk --setup 进行配置。')
+    process.exit(1)
+  }
+
+  // 确定要设置哪个 profile
+  let targetProfile = profile
+  const profileNames = Object.keys(rawConfig.profiles)
+
+  if (!targetProfile) {
+    if (profileNames.includes('default')) {
+      targetProfile = 'default'
+    } else if (profileNames.length === 1) {
+      targetProfile = profileNames[0]
+    } else {
+      console.error('❌ 请通过 --profile 指定要设置的角色名称。')
+      console.error(`可用的 profile: ${profileNames.join(', ')}`)
+      process.exit(1)
+    }
+  }
+
+  if (!rawConfig.profiles[targetProfile]) {
+    console.error(`❌ 未找到名为 [${targetProfile}] 的 profile 配置。`)
+    console.error(`可用的 profile: ${profileNames.join(', ')}`)
+    process.exit(1)
+  }
+
+  // 如果没有提供 engine，显示当前设置或提示用户
+  if (!engine) {
+    const currentEngine = (rawConfig.profiles[targetProfile] as ProfileConfig).ccEngine || 'claude'
+    console.log(`当前 profile [${targetProfile}] 的 ccEngine 设置为: ${currentEngine}`)
+    console.log('')
+    console.log('用法: claudetalk --setcc <claude|cfuse> --profile <name>')
+    console.log('示例: claudetalk --setcc cfuse --profile default')
+    process.exit(0)
+  }
+
+  // 验证 engine 值
+  const validEngines = ['claude', 'cfuse']
+  if (!validEngines.includes(engine.toLowerCase())) {
+    console.error(`❌ 无效的 ccEngine 值: ${engine}`)
+    console.error(`可选值: ${validEngines.join(', ')}`)
+    process.exit(1)
+  }
+
+  const normalizedEngine = engine.toLowerCase() as 'claude' | 'cfuse'
+
+  // 更新配置
+  rawConfig.profiles[targetProfile] = {
+    ...rawConfig.profiles[targetProfile],
+    ccEngine: normalizedEngine,
+  }
+
+  saveRawConfig(rawConfig, targetFile)
+  console.log(`✅ 已将 profile [${targetProfile}] 的 ccEngine 设置为: ${normalizedEngine}`)
+  console.log('')
+  console.log('重启 claudetalk 后生效。')
+}
+
 // ========== 主流程 ==========
 
 async function main(): Promise<void> {
@@ -594,6 +673,8 @@ ClaudeTalk - 通过钉钉/Discord 机器人与 Claude Code 对话
   claudetalk --setup --profile <name>                  配置当前目录指定角色（交互式）
   claudetalk --setup auto                              自动配置多个角色（根据 ~/.claudetalk/agent_auto_config.json）
   claudetalk --setup edit                              编辑已有角色配置（支持修改 profile 名称）
+  claudetalk --setcc <claude|cfuse>                    设置 Claude 引擎（claude 或 cfuse）
+  claudetalk --setcc <claude|cfuse> --profile <name>   设置指定角色的 Claude 引擎
   claudetalk --help                                    显示帮助信息
 
 默认角色规则:
@@ -647,6 +728,13 @@ ClaudeTalk - 通过钉钉/Discord 机器人与 Claude Code 对话
       const resolvedSetupProfile = profile ?? 'default'
       console.log(`配置完成！运行 claudetalk --profile ${resolvedSetupProfile} 启动机器人。`)
     }
+    process.exit(0)
+  }
+
+  // --setcc: 设置 ccEngine
+  if (process.argv.includes('--setcc')) {
+    const { profile: setccProfile, engine } = parseSetccArg()
+    await setCcEngine(workDir, setccProfile ?? profile, engine)
     process.exit(0)
   }
 

@@ -390,6 +390,8 @@ export interface ProfileConfig {
   discord?: DiscordProfileConfig
   /** 角色系统提示词 */
   systemPrompt?: string
+  /** Claude 引擎: claude | cfuse */
+  ccEngine?: 'claude' | 'cfuse'
   /** 是否启用 SubAgent */
   subagentEnabled?: boolean
   /** SubAgent 使用的模型 */
