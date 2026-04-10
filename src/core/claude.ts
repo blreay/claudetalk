@@ -291,6 +291,7 @@ interface ClaudeResponse {
   session_id: string
   duration_ms: number
   stop_reason: string
+  message?: unknown
 }
 
 export interface CallClaudeOptions {
@@ -303,6 +304,8 @@ export interface CallClaudeOptions {
   channel?: ChannelType
   /** 加工后的消息（由 Channel 处理后生成），有值时替换原始 message 发送给 Claude */
   processedMessage?: string
+  /** 实时消息回调，当收到 stream-json 输出时调用 */
+  onProgress?: (message: string) => void
 }
 
 /**
@@ -343,8 +346,8 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
   // 只有 codefuse-cc 需要在 args 最前面加 --cc
   const needsCcFlag = ccEngine === 'codefuse-cc'
   const args = needsCcFlag
-    ? ['--cc', '-p', '--output-format', 'json', '--dangerously-skip-permissions']
-    : ['-p', '--output-format', 'json', '--dangerously-skip-permissions']
+    ? ['--cc', '-p', '--output-format', 'stream-json', '--dangerously-skip-permissions', '--verbose']
+    : ['-p', '--output-format', 'stream-json', '--dangerously-skip-permissions', '--verbose']
 
   if (existingSessionId && existingEntry) {
     // 配置变化时清除旧 session，重建
@@ -386,8 +389,97 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
 
     let stdout = ''
     let stderr = ''
+    let lineBuffer = '' // 用于处理不完整的行
+    let hasSentResult = false // 标记是否已发送过 result 类型的 message
+    let sendRealTimeAgentTxt = false  // 标记是否发送实时的agent输出text
+    let sendRealTimeThinking = false  // 标记是否发送实时的agent思考内容
+    let sendRealTimeResult = false    // 标记是否发送实时的result, 可能导致和最后的result重复发送
 
-    child.stdout.on('data', (data: Buffer) => { stdout += data.toString() })
+    child.stdout.on('data', (data: Buffer) => {
+      const chunk = data.toString()
+      stdout += chunk
+      lineBuffer += chunk
+
+      // 按换行符分割，处理完整的行
+      const lines = lineBuffer.split('\n')
+      // 最后一行可能不完整，保留在 buffer 中
+      lineBuffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmedLine = line.trim()
+        if (!trimmedLine || !trimmedLine.startsWith('{')) continue
+
+        try {
+          const jsonLine = JSON.parse(trimmedLine) as {
+            type?: string
+            message?: unknown
+          }
+          logger(`[claude] stream-json line: type=${jsonLine.type} line=${trimmedLine}`)
+
+          // type 为 assistant 时，提取 message.content 中的 thinking 和 text 字段
+          if (jsonLine.type === 'assistant' && jsonLine.message) {
+            const msg = jsonLine.message
+            if (msg && typeof msg === 'object' && 'content' in msg) {
+              const content = (msg as { content?: unknown }).content
+              // content 可能是数组
+              if (Array.isArray(content)) {
+                for (const item of content) {
+                  if (item && typeof item === 'object') {
+                    // 提取 thinking 字段
+                    if (sendRealTimeThinking && 'thinking' in item && item.thinking) {
+                      const thinkingText = String(item.thinking)
+                      if (thinkingText && options.onProgress) {
+                        logger(`[claude] sendRealTimeThinking=${thinkingText}`)
+                        options.onProgress(thinkingText)
+                      }
+                    }
+                    // 提取 text 字段
+                    if (sendRealTimeAgentTxt && 'text' in item && item.text) {
+                      const textContent = String(item.text)
+                      if (textContent && options.onProgress) {
+                        logger(`[claude] sendText=${textContent}`)
+                        options.onProgress(textContent)
+                      }
+                    }
+                  }
+                }
+              } else if (typeof content === 'object' && content !== null) {
+                // content 是对象
+                const contentObj = content as Record<string, unknown>
+                if (sendRealTimeThinking && 'thinking' in contentObj && contentObj.thinking) {
+                  const thinkingText = String(contentObj.thinking)
+                  if (thinkingText && options.onProgress) {
+                    logger(`[claude] sendRealTimeThinking2=${thinkingText}`)
+                    options.onProgress(thinkingText)
+                  }
+                }
+                if (sendRealTimeAgentTxt && 'text' in contentObj && contentObj.text) {
+                  const textContent = String(contentObj.text)
+                  if (textContent && options.onProgress) {
+                    logger(`[claude] sendText2=${textContent}`)
+                    options.onProgress(textContent)
+                  }
+                }
+              }
+            }
+          }
+
+          // type 为 result 时，发送 message 域（如果没有则使用 result 域）的内容
+          if (jsonLine.type === 'result') {
+            const parsedLine = jsonLine as { message?: unknown; result?: string }
+            const msg = parsedLine.message ?? parsedLine.result
+            const messageText = typeof msg === 'string' ? msg : JSON.stringify(msg)
+            if (sendRealTimeResult && messageText && options.onProgress) {
+              options.onProgress(messageText)
+              hasSentResult = true
+            }
+          }
+        } catch {
+          // 解析失败，忽略该行
+          logger(`[claude] parse failed stream-json line: line=${trimmedLine}`)
+        }
+      }
+    })
     child.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
 
     // 优先使用加工后的消息（包含历史消息和角色信息），否则使用原始消息
@@ -447,6 +539,7 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
 
         const response = JSON.parse(lastJsonLine) as ClaudeResponse
         logger(`[claude] Done: duration=${response.duration_ms}ms, session_id=${response.session_id}`)
+        logger(`[claude] lastJsonLine=${lastJsonLine}`)
 
         if (response.session_id) {
           sessionMap.set(sessionKey, {
@@ -466,7 +559,22 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
           return
         }
 
-        resolve(response.result || stdout.trim())
+        // 如果未发送过 result 类型的 message，则发送最后一行的 message（如果没有 message 则使用 result）
+        // 否则返回空字符串，让 index.ts 不发送
+        
+        // 目前强制重新发送最终的结果，确保时序一致
+        hasSentResult=false
+        if (!hasSentResult) {
+          const lastMessage = response.message ?? response.result
+          const messageText = typeof lastMessage === 'string'
+            ? lastMessage
+            : JSON.stringify(lastMessage)
+          resolve(messageText)
+        } else {
+          // 已发送过 result，返回空字符串（不发送最后一行）
+          resolve('')
+        }
+        logger(`[claude] waitting for new input from user`)
       } catch (parseError) {
         logger(`[claude] Failed to parse JSON, returning raw output: ${parseError}`)
         resolve(stdout.trim())

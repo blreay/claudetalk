@@ -121,6 +121,9 @@ export async function startBot(options: StartBotOptions): Promise<void> {
 
     // 调用 Claude Code CLI 处理消息
     try {
+      // 用于跟踪已发送的进度消息，避免重复发送相同内容
+      let lastSentMessage = ''
+
       const replyText = await callClaude({
         message,
         conversationId: context.conversationId,
@@ -130,9 +133,23 @@ export async function startBot(options: StartBotOptions): Promise<void> {
         profile,
         channel: channelType,
         processedMessage: context.processedMessage,
+        onProgress: (progressMessage: string) => {
+          // 避免发送重复内容
+          if (progressMessage !== lastSentMessage) {
+            lastSentMessage = progressMessage
+            logger(`[onProgress] Sending progress message (${progressMessage.length} chars)`)
+            // 异步发送，不等待结果
+            channel.sendMessage(context.conversationId, progressMessage, context.isGroup).catch((err) => {
+              logger(`[onProgress] Failed to send progress: ${err}`)
+            })
+          }
+        },
       })
       logger(`[onMessage] Claude reply (first 200 chars): "${replyText.substring(0, 200)}"`)
-      await channel.sendMessage(context.conversationId, replyText, context.isGroup)
+      // 如果 replyText 非空，则发送（表示已发送过 result 类型的 message）
+      if (replyText) {
+        await channel.sendMessage(context.conversationId, replyText, context.isGroup)
+      }
     } catch (error) {
       logger(`[ERROR] ${error}`)
       const errorText = `处理消息时出错: ${error instanceof Error ? error.message : String(error)}`
