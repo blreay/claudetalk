@@ -20,6 +20,23 @@ function getSessionFile(workDir: string): string {
   return join(workDir, '.claudetalk-sessions.json')
 }
 
+/** 实时输出选项（持久化到 session 中） */
+export interface RealtimeOutputOptions {
+  /** 是否发送 agent 的 thinking 内容 */
+  showThinking: boolean
+  /** 是否发送 agent 的 text 内容 */
+  showText: boolean
+  /** 是否发送 result 内容（可能导致重复） */
+  showResult: boolean
+}
+
+/** 默认选项：只开启 text */
+export const DEFAULT_REALTIME_OPTIONS: RealtimeOutputOptions = {
+  showThinking: false,
+  showText: false,
+  showResult: false,
+}
+
 export interface SessionEntry {
   sessionId: string
   lastActiveAt: number
@@ -28,6 +45,8 @@ export interface SessionEntry {
   userId: string
   subagentEnabled: boolean
   channel: ChannelType
+  /** 实时输出选项（可选，缺失时使用默认值） */
+  realtimeOptions?: RealtimeOutputOptions
 }
 
 function parseSessionEntry(value: unknown, key: string): SessionEntry | null {
@@ -36,6 +55,10 @@ function parseSessionEntry(value: unknown, key: string): SessionEntry | null {
     if (!entry.userId) entry.userId = ''
     if (entry.subagentEnabled === undefined) entry.subagentEnabled = false
     if (!entry.channel) entry.channel = 'dingtalk'
+    // realtimeOptions 缺失时使用默认值
+    if (!entry.realtimeOptions) {
+      entry.realtimeOptions = { ...DEFAULT_REALTIME_OPTIONS }
+    }
     return entry
   }
   return null
@@ -117,6 +140,62 @@ export function clearSession(
     saveSessionMap(workDir, sessionMap)
   }
   return hadSession
+}
+
+/**
+ * 获取指定会话的实时输出选项
+ * 如果会话不存在或没有设置，返回默认值
+ */
+export function getRealtimeOptions(
+  conversationId: string,
+  workDir: string,
+  profile?: string,
+  channel?: ChannelType
+): RealtimeOutputOptions {
+  const sessionMap = getSessionMap(workDir)
+  const sessionKey = getSessionKey(conversationId, workDir, profile, channel)
+  const entry = sessionMap.get(sessionKey)
+  return entry?.realtimeOptions ?? { ...DEFAULT_REALTIME_OPTIONS }
+}
+
+/**
+ * 更新指定会话的实时输出选项
+ * 如果会话不存在，创建一个占位条目
+ */
+export function updateRealtimeOptions(
+  conversationId: string,
+  workDir: string,
+  options: Partial<RealtimeOutputOptions>,
+  profile?: string,
+  channel?: ChannelType
+): RealtimeOutputOptions {
+  const sessionMap = getSessionMap(workDir)
+  const sessionKey = getSessionKey(conversationId, workDir, profile, channel)
+  const entry = sessionMap.get(sessionKey)
+
+  const currentOptions = entry?.realtimeOptions ?? { ...DEFAULT_REALTIME_OPTIONS }
+  const newOptions: RealtimeOutputOptions = {
+    ...currentOptions,
+    ...options,
+  }
+
+  if (entry) {
+    entry.realtimeOptions = newOptions
+  } else {
+    // 创建占位条目（没有 sessionId，仅用于存储设置）
+    sessionMap.set(sessionKey, {
+      sessionId: '',
+      lastActiveAt: Date.now(),
+      isGroup: false,
+      conversationId,
+      userId: '',
+      subagentEnabled: false,
+      channel: channel ?? 'dingtalk',
+      realtimeOptions: newOptions,
+    })
+  }
+  saveSessionMap(workDir, sessionMap)
+  return newOptions
 }
 
 /**
@@ -306,6 +385,8 @@ export interface CallClaudeOptions {
   processedMessage?: string
   /** 实时消息回调，当收到 stream-json 输出时调用 */
   onProgress?: (message: string) => void
+  /** 实时输出选项（从 session 中读取） */
+  realtimeOptions?: RealtimeOutputOptions
 }
 
 /**
@@ -391,9 +472,11 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
     let stderr = ''
     let lineBuffer = '' // 用于处理不完整的行
     let hasSentResult = false // 标记是否已发送过 result 类型的 message
-    let sendRealTimeAgentTxt = false  // 标记是否发送实时的agent输出text
-    let sendRealTimeThinking = false  // 标记是否发送实时的agent思考内容
-    let sendRealTimeResult = false    // 标记是否发送实时的result, 可能导致和最后的result重复发送
+    // 从 options 读取实时输出选项，缺失时使用默认值
+    const realtimeOpts = options.realtimeOptions ?? DEFAULT_REALTIME_OPTIONS
+    const sendRealTimeThinking = realtimeOpts.showThinking
+    const sendRealTimeAgentTxt = realtimeOpts.showText
+    const sendRealTimeResult = realtimeOpts.showResult
 
     child.stdout.on('data', (data: Buffer) => {
       const chunk = data.toString()
@@ -542,6 +625,8 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
         logger(`[claude] lastJsonLine=${lastJsonLine}`)
 
         if (response.session_id) {
+          // 保留现有的 realtimeOptions，避免被覆盖
+          const existingRealtimeOptions = existingEntry?.realtimeOptions ?? options.realtimeOptions ?? DEFAULT_REALTIME_OPTIONS
           sessionMap.set(sessionKey, {
             sessionId: response.session_id,
             lastActiveAt: Date.now(),
@@ -550,6 +635,7 @@ export async function callClaude(options: CallClaudeOptions): Promise<string> {
             userId,
             subagentEnabled: currentSubagentEnabled,
             channel,
+            realtimeOptions: existingRealtimeOptions,
           })
           saveSessionMap(workDir, sessionMap)
         }

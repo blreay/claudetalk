@@ -4,7 +4,7 @@
  */
 
 import { getChannelDescriptor } from './channels/index.js'
-import { callClaude, clearSession, createLogger, findLastActivePrivateSession, loadConfig, log } from './core/claude.js'
+import { callClaude, clearSession, createLogger, findLastActivePrivateSession, getRealtimeOptions, loadConfig, log, updateRealtimeOptions } from './core/claude.js'
 import { closeLogFile, initLogFile } from './core/logger.js'
 import type { Channel, ChannelMessageContext, ClaudeTalkConfig } from './types.js'
 
@@ -24,8 +24,23 @@ const HELP_TEXT = [
   '- **清空记忆** 或 **/reset** — 同上',
   '- **帮助** 或 **/help** — 显示本帮助信息',
   '',
+  '**实时输出控制**',
+  '- **/thinking on|off** — 开关思考过程输出',
+  '- **/text on|off** — 开关文本内容输出',
+  '- **/status** — 查看当前输出设置',
+  '',
   '发送其他任意消息将由 Claude Code 处理。',
 ].join('\n')
+
+/**
+ * 解析斜杠命令
+ * 返回 { command, arg } 或 null（不是命令）
+ */
+function parseSlashCommand(message: string): { command: string; arg: string } | null {
+  const match = message.match(/^\/(\w+)(?:\s+(.*))?$/)
+  if (!match) return null
+  return { command: match[1].toLowerCase(), arg: (match[2] ?? '').trim() }
+}
 
 /**
  * 根据配置创建对应的 Channel 实例
@@ -119,10 +134,63 @@ export async function startBot(options: StartBotOptions): Promise<void> {
       return
     }
 
+    // 斜杠命令：实时输出控制
+    const slashCmd = parseSlashCommand(strippedMessage)
+    if (slashCmd) {
+      const { command: cmd, arg } = slashCmd
+
+      // /thinking on|off
+      if (cmd === 'thinking') {
+        if (arg === 'on' || arg === 'off') {
+          const newOptions = updateRealtimeOptions(
+            context.conversationId, workDir,
+            { showThinking: arg === 'on' },
+            profile, channelType
+          )
+          const status = newOptions.showThinking ? '✅ 已开启' : '❌ 已关闭'
+          await channel.sendMessage(context.conversationId, `思考过程输出：${status}`, context.isGroup)
+        } else {
+          await channel.sendMessage(context.conversationId, '用法: /thinking on 或 /thinking off', context.isGroup)
+        }
+        return
+      }
+
+      // /text on|off
+      if (cmd === 'text') {
+        if (arg === 'on' || arg === 'off') {
+          const newOptions = updateRealtimeOptions(
+            context.conversationId, workDir,
+            { showText: arg === 'on' },
+            profile, channelType
+          )
+          const status = newOptions.showText ? '✅ 已开启' : '❌ 已关闭'
+          await channel.sendMessage(context.conversationId, `文本内容输出：${status}`, context.isGroup)
+        } else {
+          await channel.sendMessage(context.conversationId, '用法: /text on 或 /text off', context.isGroup)
+        }
+        return
+      }
+
+      // /status
+      if (cmd === 'status') {
+        const currentOptions = getRealtimeOptions(context.conversationId, workDir, profile, channelType)
+        const statusText = [
+          '**当前输出设置**',
+          `- 思考过程: ${currentOptions.showThinking ? '✅ 开启' : '❌ 关闭'}`,
+          `- 文本内容: ${currentOptions.showText ? '✅ 开启' : '❌ 关闭'}`,
+        ].join('\n')
+        await channel.sendMessage(context.conversationId, statusText, context.isGroup)
+        return
+      }
+    }
+
     // 调用 Claude Code CLI 处理消息
     try {
       // 用于跟踪已发送的进度消息，避免重复发送相同内容
       let lastSentMessage = ''
+
+      // 获取当前会话的实时输出选项
+      const realtimeOptions = getRealtimeOptions(context.conversationId, workDir, profile, channelType)
 
       const replyText = await callClaude({
         message,
@@ -133,6 +201,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
         profile,
         channel: channelType,
         processedMessage: context.processedMessage,
+        realtimeOptions,
         onProgress: (progressMessage: string) => {
           // 避免发送重复内容
           if (progressMessage !== lastSentMessage) {

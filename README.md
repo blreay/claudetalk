@@ -19,7 +19,7 @@ https://docs.bigmodel.cn/cn/coding-plan/tool/claude
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/suyin58/claudetalk.git
+git clone https://github.com/blreay/claudetalk.git
 
 # 2. 进入目录
 cd claudetalk
@@ -50,7 +50,9 @@ npm uninstall -g claudetalk
 cd /path/to/your/project
 claudetalk --setup
 #设置使用哪个引擎 codefuse或者claude
-claudetalk --setcc claude 或者 claudetalk --setcc codefuse 或者 claudetalk --setcc codefuse-cc
+claudetalk --setcc claude
+claudetalk --setcc codefuse
+claudetalk --setcc codefuse-cc
 ```
 
 如果不指定 `--profile`，会自动创建名为 `default` 的默认角色。也可以手动指定角色名：
@@ -77,10 +79,12 @@ claudetalk --setup --profile pm
 📡 消息通道选择:
    1. dingtalk - 钉钉机器人
    2. feishu   - 飞书机器人
-请选择 (1/2): 1
-🔑 钉钉机器人配置
-DINGTALK_CLIENT_ID (AppKey): dingxxxxxxxx
-DINGTALK_CLIENT_SECRET (AppSecret): xxxxxxxx
+
+请选择 (1/2): 1 
+🔑 钉钉机器人配置 
+DINGTALK_CLIENT_ID (AppKey): dingxxxxxxxx 
+DINGTALK_CLIENT_SECRET (AppSecret): xxxxxxxx 
+
 
 📝 角色描述（可选）
 systemPrompt: 你是产品经理，负责需求分析
@@ -112,6 +116,9 @@ claudetalk --profile pm
 |------|------|
 | `新会话` 或 `/new` | 清空当前会话记忆，下次发消息开启全新对话 |
 | `清空记忆` 或 `/reset` | 同上 |
+| `/thinking on\|off` | agent思考过程输出的开关(当前会话session生效,会持久化存储) |
+| `/text on\|off` | agent中间过程输出的阶段性内容开关(当前会话session生效) |
+| `/status` | 查看当前实时输出设置 |
 | `帮助` 或 `/help` | 显示指令帮助信息 |
 
 发送其他任意消息将由 Claude Code 处理。
