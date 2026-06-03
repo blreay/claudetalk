@@ -8,47 +8,56 @@
 import * as fs from 'fs'
 import * as path from 'path'
 
-// 日志文件路径
-let logFilePath: string | null = null
-let logFileStream: fs.WriteStream | null = null
+// per-profile 日志流：key = profile name（'_shared' 用于无 profile 的全局日志）
+const logStreams = new Map<string, fs.WriteStream>()
+let currentProfile: string | null = null
 
 /**
  * 初始化日志文件
  * @param workDir - 工作目录
+ * @param profile - profile 名称，每个 profile 写入独立日志文件
  */
-export function initLogFile(workDir: string): void {
+export function initLogFile(workDir: string, profile?: string): void {
   const claudetalkDir = path.join(workDir, '.claudetalk')
-  
-  // 确保 .claudetalk 目录存在
+
   if (!fs.existsSync(claudetalkDir)) {
     fs.mkdirSync(claudetalkDir, { recursive: true })
   }
-  
-  // 创建日志文件路径（按日期命名）
+
   const date = new Date()
   const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-  logFilePath = path.join(claudetalkDir, `claudetalk-${dateStr}.log`)
-  
-  // 创建日志文件写入流（追加模式）
-  logFileStream = fs.createWriteStream(logFilePath, { flags: 'a' })
-  
-  // 写入日志文件头部
+
+  const streamKey = profile || '_shared'
+  currentProfile = streamKey
+
+  if (logStreams.has(streamKey)) return
+
+  const fileName = profile
+    ? `claudetalk-${profile}-${dateStr}.log`
+    : `claudetalk-${dateStr}.log`
+  const logFilePath = path.join(claudetalkDir, fileName)
+
+  const stream = fs.createWriteStream(logFilePath, { flags: 'a' })
+  logStreams.set(streamKey, stream)
+
   let header = `\n${'='.repeat(80)}\n`
   header += `ClaudeTalk Log Session Started: ${formatTimestamp()}\n`
   header += `${'='.repeat(80)}\n\n`
-  logFileStream.write(header)
+  stream.write(header)
 }
 
 /**
- * 关闭日志文件
+ * 关闭日志文件（关闭当前 profile 或全部）
  */
 export function closeLogFile(): void {
-  if (logFileStream) {
-    logFileStream.write(`\n${'='.repeat(80)}\n`)
-    logFileStream.write(`ClaudeTalk Log Session Ended: ${formatTimestamp()}\n`)
-    logFileStream.write(`${'='.repeat(80)}\n`)
-    logFileStream.end()
-    logFileStream = null
+  for (const [key, stream] of logStreams) {
+    if (stream && !stream.destroyed) {
+      stream.write(`\n${'='.repeat(80)}\n`)
+      stream.write(`ClaudeTalk Log Session Ended: ${formatTimestamp()}\n`)
+      stream.write(`${'='.repeat(80)}\n`)
+      stream.end()
+    }
+    logStreams.delete(key)
   }
 }
 
@@ -69,13 +78,12 @@ function formatTimestamp(): string {
  */
 export function log(msg: string): void {
   const logMessage = `[${formatTimestamp()}] ${msg}`
-  
-  // 输出到控制台
+
   console.error(logMessage)
-  
-  // 输出到日志文件
-  if (logFileStream && !logFileStream.destroyed) {
-    logFileStream.write(logMessage + '\n')
+
+  const stream = logStreams.get(currentProfile || '_shared')
+  if (stream && !stream.destroyed) {
+    stream.write(logMessage + '\n')
   }
 }
 

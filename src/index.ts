@@ -81,8 +81,8 @@ function createChannel(channelType: string, config: ClaudeTalkConfig, workDir: s
 export async function startBot(options: StartBotOptions): Promise<void> {
   const { workDir, profile } = options
 
-  // 初始化日志文件
-  initLogFile(workDir)
+  // 初始化日志文件（per-profile 独立日志）
+  initLogFile(workDir, profile)
 
   const config = loadConfig(workDir, profile)
   if (!config) {
