@@ -25,6 +25,8 @@ export type MessageRole = 'user' | 'bot';
 
 /** 历史消息条目 */
 export interface ChatHistoryEntry {
+  /** 钉钉消息 ID（用于引用消息查找） */
+  msgId?: string;
   /** 消息时间戳（ms） */
   timestamp: number;
   /** 消息来源：user=用户，bot=机器人 */
@@ -118,6 +120,18 @@ export function appendChatHistory(
   logger(
     `[chat-history] Appended ${entry.role} message to history_${conversationId}: senderId=${entry.senderId}, content=${entry.content.substring(0, 50)}`
   );
+}
+
+/**
+ * 根据钉钉 msgId 查找历史消息
+ */
+export function findChatHistoryByMsgId(
+  claudetalkDir: string,
+  conversationId: string,
+  msgId: string
+): ChatHistoryEntry | undefined {
+  const entries = loadChatHistory(claudetalkDir, conversationId);
+  return entries.find((e) => e.msgId === msgId);
 }
 
 /**

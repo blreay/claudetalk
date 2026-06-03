@@ -779,6 +779,9 @@ export class DingTalkClient implements Channel {
   private async handleInboundMessage(callback: DingTalkInboundCallback): Promise<void> {
     const isGroup = callback.conversationType === '2';
 
+    // DEBUG: 打印完整回调数据，用于排查引用消息字段结构
+    this.logger(`[DEBUG] Full callback JSON: ${JSON.stringify(callback)}`);
+
     // 更新 chat-members.json：记录当前机器人的 chatbotUserId 和消息发送者信息
     this.updateChatMemberFromCallback(callback);
 
@@ -823,16 +826,34 @@ export class DingTalkClient implements Channel {
       messageText = callback.content;
     }
 
+    // 引用消息处理：钉钉回调中 text.repliedMsg 直接携带被引用消息的完整内容
+    let quotedContent = '';
+    if (callback.text?.isReplyMsg && callback.text.repliedMsg) {
+      const replied = callback.text.repliedMsg;
+      if (replied.content?.text) {
+        quotedContent = replied.content.text;
+        this.logger(`Quoted message extracted: msgId=${replied.msgId}, senderId=${replied.senderId}, length=${quotedContent.length}`);
+      }
+    }
+
+    // 拼接引用内容和用户消息
+    if (quotedContent && messageText) {
+      messageText = `[引用消息]: ${quotedContent}\n\n---\n\n${messageText}`;
+    } else if (quotedContent && !messageText) {
+      messageText = `[引用消息]: ${quotedContent}\n\n---\n\n请分析以上引用的内容`;
+    }
+
     if (!messageText.trim()) {
       this.logger('Empty message content, ignoring');
       return;
     }
 
-    this.logger(`Received message from senderId=${callback.senderId}, senderStaffId=${callback.senderStaffId || '(empty)'}, conversationId=${callback.conversationId}, isGroup=${isGroup}: ${messageText}`);
+    this.logger(`Received message from senderId=${callback.senderId}, senderStaffId=${callback.senderStaffId || '(empty)'}, conversationId=${callback.conversationId}, isGroup=${isGroup}: ${messageText.substring(0, 200)}`);
 
     // 群聊消息写入历史记录
     if (isGroup) {
       appendChatHistory(this.claudetalkDir, callback.conversationId, {
+        msgId: callback.msgId,
         timestamp: callback.createTime || Date.now(),
         role: 'user',
         senderId: callback.senderId,
