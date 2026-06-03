@@ -127,6 +127,16 @@ export interface DingTalkInboundCallback {
   /** 文本消息内容 */
   text?: {
     content: string;
+    /** 是否为引用回复消息 */
+    isReplyMsg?: boolean;
+    /** 被引用的原始消息 */
+    repliedMsg?: {
+      createdAt: number;
+      senderId: string;
+      msgType: string;
+      msgId: string;
+      content: { text: string };
+    };
   };
   /** 会话 ID */
   conversationId: string;
