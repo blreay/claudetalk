@@ -378,9 +378,7 @@ export class DingTalkClient implements Channel {
     // 启动 peer-message 轮询
     this.startPeerMessagePolling();
 
-    // 启动连接
-    await this.connectStream();
-    // Start webhook server if configured
+    // Start webhook server if configured (before connectStream so it works even if DingTalk auth fails)
     if (this.webhookServer) {
       this.webhookServer.onMessage((context, message) => {
         if (this.channelMessageHandler) {
@@ -390,6 +388,9 @@ export class DingTalkClient implements Channel {
       })
       await this.webhookServer.start()
     }
+
+    // 启动连接
+    await this.connectStream();
   }
 
   /**
