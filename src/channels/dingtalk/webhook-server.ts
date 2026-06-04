@@ -148,6 +148,7 @@ export class WebhookServer {
       senderId,
       isGroup,
       userId,
+      source: 'webhook',
     }
 
     res.writeHead(200, { 'Content-Type': 'text/plain' })

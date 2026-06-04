@@ -1498,7 +1498,8 @@ ${mergedMembers.map((member, index) => {
   async sendMessage(
     conversationId: string,
     content: string,
-    isGroup: boolean
+    isGroup: boolean,
+    _source?: 'websocket' | 'webhook'
   ): Promise<void> {
     const response = await this.sendTextMessage(conversationId, content, isGroup);
 

@@ -132,6 +132,7 @@ export class DingTalkClient implements Channel {
    * 发送上线通知（实现 Channel 接口）
    */
   async sendOnlineNotification(userId: string, workDir: string): Promise<void> {
+    if (!this.config.clientId || !this.config.clientSecret) return;
     const notifyText = `✅ ClaudeTalk 已上线\n📁 工作目录: ${workDir}`;
     try {
       await this.sendPrivateMessage(userId, notifyText, 'sampleText');
@@ -362,21 +363,19 @@ export class DingTalkClient implements Channel {
    * 启动 Stream WebSocket 连接，开始接收钉钉消息
    */
   async start(): Promise<void> {
-    if (!this.config.clientId || !this.config.clientSecret) {
+    const hasStreamCredentials = !!(this.config.clientId && this.config.clientSecret)
+    const hasWebhook = !!this.webhookServer
+
+    if (!hasStreamCredentials && !hasWebhook) {
       throw new Error(
-        'Missing required environment variables.\n' +
-        'Please set:\n' +
-        '  export DINGTALK_CLIENT_ID=your_app_key\n' +
-        '  export DINGTALK_CLIENT_SECRET=your_app_secret'
+        '钉钉 Channel 至少需要配置以下其中一项:\n' +
+        '  1. Stream 机器人: DINGTALK_CLIENT_ID + DINGTALK_CLIENT_SECRET\n' +
+        '  2. Webhook 机器人: webhook.webhookUrls + webhook.listenAddress'
       );
     }
-    this.logger(`Connecting to DingTalk Stream... clientId=${this.config.clientId}`);
 
     this.isManuallyClosed = false;
     this.reconnectDelayMs = 3000;
-
-    // 启动 peer-message 轮询
-    this.startPeerMessagePolling();
 
     // Start webhook server if configured (before connectStream so it works even if DingTalk auth fails)
     if (this.webhookServer) {
@@ -389,8 +388,13 @@ export class DingTalkClient implements Channel {
       await this.webhookServer.start()
     }
 
-    // 启动连接
-    await this.connectStream();
+    if (hasStreamCredentials) {
+      this.logger(`Connecting to DingTalk Stream... clientId=${this.config.clientId}`);
+      this.startPeerMessagePolling();
+      await this.connectStream();
+    } else {
+      this.logger('DingTalk Stream not configured, running webhook-only mode');
+    }
   }
 
   /**
@@ -912,7 +916,7 @@ export class DingTalkClient implements Channel {
 
       // 先发送"收到"消息，让用户知道机器人已接收
       try {
-        await this.sendMessage(callback.conversationId, '👍 收到，正在处理...', isGroup);
+        await this.sendMessage(callback.conversationId, '👍 收到，正在处理...', isGroup, 'websocket');
       } catch (error) {
         this.logger(`Failed to send "received" message: ${error}`);
       }
@@ -923,6 +927,7 @@ export class DingTalkClient implements Channel {
         isGroup,
         userId: callback.senderStaffId || '',
         processedMessage: contextMessage,
+        source: 'websocket',
       };
       await this.channelMessageHandler(context, messageText);
     }
@@ -936,55 +941,62 @@ export class DingTalkClient implements Channel {
   async sendMessage(
     conversationId: string,
     content: string,
-    isGroup: boolean
+    isGroup: boolean,
+    source?: 'websocket' | 'webhook'
   ): Promise<void> {
-    const messageType = this.config.messageType || 'markdown';
+    const hasStreamCredentials = !!(this.config.clientId && this.config.clientSecret)
+    const sendViaWebsocket = source !== 'webhook' && hasStreamCredentials
+    const sendViaWebhook = source !== 'websocket'
 
-    // 群聊时，把 @profileName 替换成 <at id=profile>机器人名称</at> 格式，让消息更直观易读
-    // 例如：@front → <at id=front>前端开发工程师</at>
-    let displayContent = content;
-    if (isGroup) {
-      const knownProfiles = this.loadKnownProfilesFromChatMembers();
-      const chatMembersConfig = this.loadChatMembersConfig();
-      const botSelf = chatMembersConfig['_bot_self'] || [];
-      for (const profile of knownProfiles) {
-        const entry = botSelf.find((m) => m.profileName === profile);
-        const displayName = entry?.name || this.readAgentDisplayName(profile);
-        displayContent = displayContent.replace(
-          new RegExp(`@${profile}\\b`, 'g'),
-          `<at id=${profile}>${displayName}</at>`
-        );
+    if (sendViaWebsocket) {
+      const messageType = this.config.messageType || 'markdown';
+
+      // 群聊时，把 @profileName 替换成 <at id=profile>机器人名称</at> 格式，让消息更直观易读
+      // 例如：@front → <at id=front>前端开发工程师</at>
+      let displayContent = content;
+      if (isGroup) {
+        const knownProfiles = this.loadKnownProfilesFromChatMembers();
+        const chatMembersConfig = this.loadChatMembersConfig();
+        const botSelf = chatMembersConfig['_bot_self'] || [];
+        for (const profile of knownProfiles) {
+          const entry = botSelf.find((m) => m.profileName === profile);
+          const displayName = entry?.name || this.readAgentDisplayName(profile);
+          displayContent = displayContent.replace(
+            new RegExp(`@${profile}\\b`, 'g'),
+            `<at id=${profile}>${displayName}</at>`
+          );
+        }
       }
-    }
 
-    if (messageType === 'card' && this.config.cardTemplateId) {
-      await this.createAICard(conversationId, displayContent);
-    } else {
-      await this.sendMarkdownMessage(conversationId, displayContent, isGroup);
-    }
+      if (messageType === 'card' && this.config.cardTemplateId) {
+        await this.createAICard(conversationId, displayContent);
+      } else {
+        await this.sendMarkdownMessage(conversationId, displayContent, isGroup);
+      }
 
-    // 群聊：写入历史记录 + 解析 @标签写入 peer-message
-    if (isGroup) {
-      appendChatHistory(this.claudetalkDir, conversationId, {
-        timestamp: Date.now(),
-        role: 'bot',
-        senderId: this.profileName,
-        content,
-      });
-
-      const knownProfiles = this.loadKnownProfilesFromChatMembers();
-      if (knownProfiles.length > 0) {
-        writePeerMessagesFromContent(
-          this.claudetalkDir,
-          conversationId,
+      // 群聊：写入历史记录 + 解析 @标签写入 peer-message
+      if (isGroup) {
+        appendChatHistory(this.claudetalkDir, conversationId, {
+          timestamp: Date.now(),
+          role: 'bot',
+          senderId: this.profileName,
           content,
-          this.profileName,
-          knownProfiles
-        );
+        });
+
+        const knownProfiles = this.loadKnownProfilesFromChatMembers();
+        if (knownProfiles.length > 0) {
+          writePeerMessagesFromContent(
+            this.claudetalkDir,
+            conversationId,
+            content,
+            this.profileName,
+            knownProfiles
+          );
+        }
       }
     }
-    // Push to webhook URLs if configured
-    if (this.webhookClient) {
+
+    if (sendViaWebhook && this.webhookClient) {
       this.webhookClient.postToWebhooks(content).catch((err) => {
         this.logger(`[sendMessage] Webhook push error: ${err}`)
       })
@@ -1322,14 +1334,15 @@ registerChannel({
     {
       key: 'DINGTALK_CLIENT_ID',
       label: 'DINGTALK_CLIENT_ID (AppKey)',
-      required: true,
-      hint: '在钉钉开放平台 (https://open-dev.dingtalk.com) 创建应用获取',
+      required: false,
+      hint: '钉钉 Stream 机器人凭证（可选，不填则仅使用 Webhook 模式）',
     },
     {
       key: 'DINGTALK_CLIENT_SECRET',
       label: 'DINGTALK_CLIENT_SECRET (AppSecret)',
-      required: true,
+      required: false,
       secret: true,
+      hint: '钉钉 Stream 机器人凭证（可选，不填则仅使用 Webhook 模式）',
     },
   ],
   create(config: Record<string, string>) {
