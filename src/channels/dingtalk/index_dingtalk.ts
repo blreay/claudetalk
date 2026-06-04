@@ -19,6 +19,9 @@ import type {
 } from '../../types.js';
 import { registerChannel } from '../registry.js';
 import { createLogger } from '../../core/logger.js';
+import { WebhookClient } from './webhook-client.js'
+import { WebhookServer } from './webhook-server.js'
+import type { WebhookConfig } from '../../types.js'
 import { loadConfig } from '../../core/claude.js';
 import {
   loadPeerMessages,
@@ -86,6 +89,8 @@ export class DingTalkClient implements Channel {
   private lastFrameAt: number = 0;
   private heartbeatWatchdog: ReturnType<typeof setInterval> | null = null;
   private readonly HEARTBEAT_TIMEOUT_MS = 3 * 60 * 1000; // 3分钟无帧则认为连接已断
+  private webhookClient: WebhookClient | null = null;
+  private webhookServer: WebhookServer | null = null;
 
   constructor(config: DingTalkChannelConfig) {
     this.config = config;
@@ -95,6 +100,18 @@ export class DingTalkClient implements Channel {
     this.logger = createLogger('dingtalk', this.profileName);
     // 启动时立即将自己注册到 chat-members.json 的 _bot_self，确保 knownProfiles 能读到所有已启动的机器人
     this.registerSelfToChatMembers();
+    // Initialize webhook modules if configured
+    const webhookConfig = (config as unknown as { webhook?: WebhookConfig }).webhook
+    if (webhookConfig?.webhookUrls?.length && webhookConfig?.listenAddress) {
+      this.webhookClient = new WebhookClient(
+        { webhookUrls: webhookConfig.webhookUrls, webhookSecret: webhookConfig.webhookSecret || '' },
+        this.logger
+      )
+      this.webhookServer = new WebhookServer(
+        { listenAddress: webhookConfig.listenAddress },
+        this.logger
+      )
+    }
   }
 
   /**
@@ -363,6 +380,16 @@ export class DingTalkClient implements Channel {
 
     // 启动连接
     await this.connectStream();
+    // Start webhook server if configured
+    if (this.webhookServer) {
+      this.webhookServer.onMessage((context, message) => {
+        if (this.channelMessageHandler) {
+          return this.channelMessageHandler(context, message)
+        }
+        return Promise.resolve()
+      })
+      await this.webhookServer.start()
+    }
   }
 
   /**
@@ -381,6 +408,9 @@ export class DingTalkClient implements Channel {
     if (this.ws) {
       this.ws.close();
       this.ws = null;
+    }
+    if (this.webhookServer) {
+      this.webhookServer.stop()
     }
     this.logger('DingTalk Stream stopped');
   }
@@ -952,6 +982,12 @@ export class DingTalkClient implements Channel {
         );
       }
     }
+    // Push to webhook URLs if configured
+    if (this.webhookClient) {
+      this.webhookClient.postToWebhooks(content).catch((err) => {
+        this.logger(`[sendMessage] Webhook push error: ${err}`)
+      })
+    }
   }
 
   /**
@@ -1296,6 +1332,13 @@ registerChannel({
     },
   ],
   create(config: Record<string, string>) {
+    let webhookConfig: WebhookConfig | undefined
+    if (config.webhook) {
+      try {
+        webhookConfig = JSON.parse(config.webhook) as WebhookConfig
+      } catch {}
+    }
+
     return new DingTalkClient({
       clientId: config.DINGTALK_CLIENT_ID,
       clientSecret: config.DINGTALK_CLIENT_SECRET,
@@ -1303,6 +1346,7 @@ registerChannel({
       profileName: config.profileName,
       workDir: config.workDir,
       systemPrompt: config.systemPrompt,
-    })
+      webhook: webhookConfig,
+    } as DingTalkChannelConfig)
   },
 })

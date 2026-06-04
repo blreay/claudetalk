@@ -56,6 +56,8 @@ export interface DingTalkChannelConfig {
   profileName?: string;
   /** 机器人角色的系统提示词，用于 context-message.template 的 {{systemPrompt}} 变量 */
   systemPrompt?: string;
+  /** Webhook 配置（附属模块） */
+  webhook?: WebhookConfig;
 }
 
 // 钉钉 Stream 消息

@@ -70,6 +70,7 @@ function createChannel(channelType: string, config: ClaudeTalkConfig, workDir: s
     ...(profileName ? { profileName } : {}),
     ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
     workDir, // 注入工作目录，用于存储项目级别的配置文件（如 chat-members.json）
+    ...(config.webhook ? { webhook: JSON.stringify(config.webhook) } : {}),
   }
 
   return descriptor.create(enrichedChannelConfig)
