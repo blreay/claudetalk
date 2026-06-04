@@ -125,13 +125,13 @@ export async function startBot(options: StartBotOptions): Promise<void> {
       const replyText = hadSession
         ? '🔄 已清空当前会话记忆，下次发消息将开启全新对话。'
         : '💡 当前没有活跃的会话记忆，发消息即可开始新对话。'
-      await channel.sendMessage(context.conversationId, replyText, context.isGroup)
+      await channel.sendMessage(context.conversationId, replyText, context.isGroup, context.source)
       return
     }
 
     // 内置指令：帮助（使用原始消息判断，不受 contextMessage 影响）
     if (HELP_COMMANDS.has(command)) {
-      await channel.sendMessage(context.conversationId, HELP_TEXT, context.isGroup)
+      await channel.sendMessage(context.conversationId, HELP_TEXT, context.isGroup, context.source)
       return
     }
 
@@ -149,9 +149,9 @@ export async function startBot(options: StartBotOptions): Promise<void> {
             profile, channelType
           )
           const status = newOptions.showThinking ? '✅ 已开启' : '❌ 已关闭'
-          await channel.sendMessage(context.conversationId, `思考过程输出：${status}`, context.isGroup)
+          await channel.sendMessage(context.conversationId, `思考过程输出：${status}`, context.isGroup, context.source)
         } else {
-          await channel.sendMessage(context.conversationId, '用法: /thinking on 或 /thinking off', context.isGroup)
+          await channel.sendMessage(context.conversationId, '用法: /thinking on 或 /thinking off', context.isGroup, context.source)
         }
         return
       }
@@ -165,9 +165,9 @@ export async function startBot(options: StartBotOptions): Promise<void> {
             profile, channelType
           )
           const status = newOptions.showText ? '✅ 已开启' : '❌ 已关闭'
-          await channel.sendMessage(context.conversationId, `文本内容输出：${status}`, context.isGroup)
+          await channel.sendMessage(context.conversationId, `文本内容输出：${status}`, context.isGroup, context.source)
         } else {
-          await channel.sendMessage(context.conversationId, '用法: /text on 或 /text off', context.isGroup)
+          await channel.sendMessage(context.conversationId, '用法: /text on 或 /text off', context.isGroup, context.source)
         }
         return
       }
@@ -180,7 +180,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
           `- 思考过程: ${currentOptions.showThinking ? '✅ 开启' : '❌ 关闭'}`,
           `- 文本内容: ${currentOptions.showText ? '✅ 开启' : '❌ 关闭'}`,
         ].join('\n')
-        await channel.sendMessage(context.conversationId, statusText, context.isGroup)
+        await channel.sendMessage(context.conversationId, statusText, context.isGroup, context.source)
         return
       }
     }
@@ -209,7 +209,7 @@ export async function startBot(options: StartBotOptions): Promise<void> {
             lastSentMessage = progressMessage
             logger(`[onProgress] Sending progress message (${progressMessage.length} chars)`)
             // 异步发送，不等待结果
-            channel.sendMessage(context.conversationId, progressMessage, context.isGroup).catch((err) => {
+            channel.sendMessage(context.conversationId, progressMessage, context.isGroup, context.source).catch((err) => {
               logger(`[onProgress] Failed to send progress: ${err}`)
             })
           }
@@ -218,12 +218,12 @@ export async function startBot(options: StartBotOptions): Promise<void> {
       logger(`[onMessage] Claude reply (first 200 chars): "${replyText.substring(0, 200)}"`)
       // 如果 replyText 非空，则发送（表示已发送过 result 类型的 message）
       if (replyText) {
-        await channel.sendMessage(context.conversationId, replyText, context.isGroup)
+        await channel.sendMessage(context.conversationId, replyText, context.isGroup, context.source)
       }
     } catch (error) {
       logger(`[ERROR] ${error}`)
       const errorText = `处理消息时出错: ${error instanceof Error ? error.message : String(error)}`
-      await channel.sendMessage(context.conversationId, errorText, context.isGroup).catch(() => {})
+      await channel.sendMessage(context.conversationId, errorText, context.isGroup, context.source).catch(() => {})
     }
   })
 

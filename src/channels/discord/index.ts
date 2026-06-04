@@ -168,7 +168,7 @@ export class DiscordClient implements Channel {
    * 发送消息（实现 Channel 接口）
    * 超过 2000 字符时自动分段发送
    */
-  async sendMessage(conversationId: string, content: string, _isGroup: boolean): Promise<void> {
+  async sendMessage(conversationId: string, content: string, _isGroup: boolean, _source?: 'websocket' | 'webhook'): Promise<void> {
     const channel = await this.client.channels.fetch(conversationId)
     if (!channel?.isTextBased()) {
       throw new Error(`[discord] Channel ${conversationId} 不是文本频道`)

@@ -289,6 +289,9 @@ export interface ChannelState {
  */
 export type ChannelType = string
 
+/** 消息来源通道 */
+export type MessageSource = 'websocket' | 'webhook'
+
 /** 跨 Channel 统一的消息上下文 */
 export interface ChannelMessageContext {
   /** 会话 ID（钉钉 conversationId / Discord channelId） */
@@ -301,6 +304,8 @@ export interface ChannelMessageContext {
   userId: string
   /** 加工后的消息（由 Channel 处理后生成，用于传给大模型；原始消息用于 ClaudeTalk 内置指令识别） */
   processedMessage?: string
+  /** 消息来源通道，用于路由响应到正确的输出通道 */
+  source?: MessageSource
 }
 
 /** Channel 统一接口，钉钉和 Discord 各自完整实现 */
@@ -311,8 +316,8 @@ export interface Channel {
   stop(): void
   /** 注册消息处理器 */
   onMessage(handler: (context: ChannelMessageContext, message: string) => Promise<void>): void
-  /** 发送消息 */
-  sendMessage(conversationId: string, content: string, isGroup: boolean): Promise<void>
+  /** 发送消息（source 指定输出通道，未指定则发送到所有通道） */
+  sendMessage(conversationId: string, content: string, isGroup: boolean, source?: MessageSource): Promise<void>
   /** 发送上线通知（可选，各 Channel 自行实现） */
   sendOnlineNotification?(userId: string, workDir: string): Promise<void>
   /** 获取历史消息（Discord 专有，钉钉不支持） */
