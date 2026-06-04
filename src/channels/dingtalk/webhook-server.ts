@@ -7,6 +7,8 @@ export interface WebhookServerConfig {
 
 type MessageHandler = (context: ChannelMessageContext, message: string) => Promise<void>
 
+const SEPARATOR = '════════════════════════════════════════════════════════════════════════════════'
+
 export class WebhookServer {
   private server: http.Server | null = null
   private readonly host: string
@@ -70,11 +72,44 @@ export class WebhookServer {
       body += chunk.toString()
     })
     req.on('end', () => {
-      this.processBody(body, res)
+      this.dumpIncomingRequest(req, body)
+      this.processBody(body, res, req)
     })
   }
 
-  private processBody(body: string, res: http.ServerResponse): void {
+  private dumpIncomingRequest(req: http.IncomingMessage, body: string): void {
+    const lines = [
+      SEPARATOR,
+      `[WebhookServer] ◀◀◀ INCOMING REQUEST`,
+      SEPARATOR,
+      `${req.method} ${req.url} HTTP/${req.httpVersion}`,
+      `Host: ${req.headers.host || ''}`,
+    ]
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (key === 'host') continue
+      lines.push(`${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
+    }
+    lines.push('')
+    lines.push(body)
+    lines.push(SEPARATOR)
+    this.logger(lines.join('\n'))
+  }
+
+  private dumpOutgoingResponse(statusCode: number, body: string): void {
+    const lines = [
+      SEPARATOR,
+      `[WebhookServer] ▶▶▶ OUTGOING RESPONSE`,
+      SEPARATOR,
+      `HTTP ${statusCode}`,
+      `Content-Type: text/plain`,
+      '',
+      body,
+      SEPARATOR,
+    ]
+    this.logger(lines.join('\n'))
+  }
+
+  private processBody(body: string, res: http.ServerResponse, req: http.IncomingMessage): void {
     let callback: {
       conversationType?: string
       conversationId?: string
@@ -91,6 +126,7 @@ export class WebhookServer {
       this.logger(`[WebhookServer] Invalid JSON body: ${body.substring(0, 200)}`)
       res.writeHead(400, { 'Content-Type': 'text/plain' })
       res.end('Bad Request: invalid JSON')
+      this.dumpOutgoingResponse(400, 'Bad Request: invalid JSON')
       return
     }
 
@@ -98,6 +134,7 @@ export class WebhookServer {
     if (!messageText) {
       res.writeHead(200, { 'Content-Type': 'text/plain' })
       res.end('OK')
+      this.dumpOutgoingResponse(200, 'OK')
       return
     }
 
@@ -115,6 +152,7 @@ export class WebhookServer {
 
     res.writeHead(200, { 'Content-Type': 'text/plain' })
     res.end('OK')
+    this.dumpOutgoingResponse(200, 'OK')
 
     if (this.messageHandler) {
       this.messageHandler(context, messageText).catch((err) => {
