@@ -9,7 +9,8 @@ import { join } from 'path'
 import { createInterface } from 'readline'
 import { getAllChannelDescriptors, getChannelDescriptor } from './channels/index.js'
 import { startBot } from './index.js'
-import type { ProfileConfig } from './types.js'
+import { generatePublicUrl } from './core/domain.js'
+import type { ProfileConfig, WebhookConfig } from './types.js'
 
 // ========== 配置文件路径 ==========
 const LOCAL_CONFIG_FILENAME = '.claudetalk.json'
@@ -472,6 +473,69 @@ async function interactiveSetup(workDir: string, profile?: string): Promise<void
     }
   }
 
+  // 2.5 Webhook 机器人配置（仅 dingtalk channel）
+  let webhookConfig: WebhookConfig | undefined
+  if (channelType === 'dingtalk') {
+    console.log('')
+    console.log('📡 Webhook 机器人配置（可选）')
+    console.log('   配置后可通过 HTTP POST 接收自定义机器人 outgoing 回调，并通过 webhook 推送响应')
+
+    const existingWebhook = existingProfile?.webhook as WebhookConfig | undefined
+    const defaultAnswer = existingWebhook ? 'y' : 'n'
+    const enableWebhookInput = await promptInput(
+      `是否配置 webhook 机器人？(y/N) [${defaultAnswer}]: `
+    )
+    const enableWebhook = (enableWebhookInput || defaultAnswer).toLowerCase() === 'y'
+
+    if (enableWebhook) {
+      // Webhook URLs
+      const existingUrls = existingWebhook?.webhookUrls?.join(',') || ''
+      const urlsPrompt = existingUrls
+        ? `webhook URL (多个用逗号分隔) [${existingUrls.substring(0, 50)}...]: `
+        : 'webhook URL (多个用逗号分隔): '
+      const urlsInput = await promptInput(urlsPrompt)
+      const webhookUrls = (urlsInput || existingUrls)
+        .split(',')
+        .map((u: string) => u.trim())
+        .filter((u: string) => u.length > 0)
+
+      // Webhook Secret
+      const existingSecret = existingWebhook?.webhookSecret || ''
+      const secretDisplay = existingSecret ? `${existingSecret.substring(0, 4)}****` : ''
+      const secretPrompt = secretDisplay
+        ? `webhook 加签密钥 [${secretDisplay}]: `
+        : 'webhook 加签密钥: '
+      const secretInput = await promptInput(secretPrompt)
+      const webhookSecret = secretInput || existingSecret
+
+      // Listen Address
+      const existingListen = existingWebhook?.listenAddress || '0.0.0.0:40000'
+      const listenInput = await promptInput(`本机监听地址 [${existingListen}]: `)
+      const listenAddress = listenInput || existingListen
+
+      // Generate public URL
+      console.log('')
+      console.log('🔗 正在生成公网访问地址...')
+      let publicUrl = existingWebhook?.publicUrl || ''
+      try {
+        const port = parseInt(listenAddress.split(':')[1], 10) || 40000
+        const baseUrl = await generatePublicUrl(port)
+        publicUrl = `${baseUrl}/dingtalk-channel/message`
+        console.log(`✅ 公网地址: ${publicUrl}`)
+        console.log('⚠️  请保存此地址，配置钉钉自定义机器人时需要用到！')
+      } catch (err) {
+        console.log(`⚠️  公网地址生成失败: ${err}`)
+        if (publicUrl) {
+          console.log(`   使用上次保存的地址: ${publicUrl}`)
+        } else {
+          console.log('   请稍后手动配置 publicUrl')
+        }
+      }
+
+      webhookConfig = { webhookUrls, webhookSecret, listenAddress, publicUrl }
+    }
+  }
+
   // 3. 角色描述（systemPrompt）
   console.log('')
   console.log('📝 角色描述（可选，直接回车跳过）')
@@ -531,6 +595,7 @@ async function interactiveSetup(workDir: string, profile?: string): Promise<void
     ...(systemPrompt ? { systemPrompt } : {}),
     ...(enableSubagent ? { subagentEnabled: true } : {}),
     ...(subagentModel ? { subagentModel } : {}),
+    ...(webhookConfig ? { webhook: webhookConfig } : {}),
   }
 
   const updatedConfig: RawConfig = {
