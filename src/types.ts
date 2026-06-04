@@ -388,6 +388,18 @@ export interface DiscordProfileConfig {
   GUILD_ID?: string
 }
 
+/** Webhook 机器人配置（DingTalk channel 附属） */
+export interface WebhookConfig {
+  /** 钉钉群聊机器人 webhook URL 列表 */
+  webhookUrls: string[]
+  /** 钉钉机器人加签密钥 */
+  webhookSecret: string
+  /** 本机 HTTP server 监听地址，格式 IP:端口 */
+  listenAddress: string
+  /** 自动生成的公网访问 URL */
+  publicUrl?: string
+}
+
 /** ClaudeTalk Profile 配置 */
 export interface ProfileConfig {
   /** 消息通道类型，必填 */
@@ -398,6 +410,8 @@ export interface ProfileConfig {
   feishu?: FeishuProfileConfig
   /** Discord 配置 */
   discord?: DiscordProfileConfig
+  /** Webhook 机器人配置 */
+  webhook?: WebhookConfig
   /** 角色系统提示词 */
   systemPrompt?: string
   /** Claude 引擎: claude | codefuse | codefuse-cc */
