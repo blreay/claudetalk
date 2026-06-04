@@ -38,6 +38,7 @@
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.60.0",
     "discord.js": "^14.25.1",
+    "egoroof-blowfish": "^4.0.2",
     "socks-proxy-agent": "^8.0.5"
   },
   "overrides": {
