@@ -132,12 +132,18 @@ export class DingTalkClient implements Channel {
    * 发送上线通知（实现 Channel 接口）
    */
   async sendOnlineNotification(userId: string, workDir: string): Promise<void> {
-    if (!this.config.clientId || !this.config.clientSecret) return;
     const notifyText = `✅ ClaudeTalk 已上线\n📁 工作目录: ${workDir}`;
-    try {
-      await this.sendPrivateMessage(userId, notifyText, 'sampleText');
-    } catch (error) {
-      this.logger(`[notify] Failed to send online notification: ${error}`);
+    if (userId && this.config.clientId && this.config.clientSecret) {
+      try {
+        await this.sendPrivateMessage(userId, notifyText, 'sampleText');
+      } catch (error) {
+        this.logger(`[notify] Failed to send online notification via websocket: ${error}`);
+      }
+    }
+    if (this.webhookClient) {
+      this.webhookClient.postToWebhooks(`${notifyText} (webhook_bot)`).catch((error) => {
+        this.logger(`[notify] Failed to send online notification via webhook: ${error}`);
+      })
     }
   }
 

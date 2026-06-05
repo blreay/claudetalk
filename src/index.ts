@@ -233,10 +233,8 @@ export async function startBot(options: StartBotOptions): Promise<void> {
   // 连接成功后发上线通知
   if (channel.sendOnlineNotification) {
     const lastSession = findLastActivePrivateSession(workDir, channelType, profile)
-    if (lastSession?.userId) {
-      await channel.sendOnlineNotification(lastSession.userId, workDir).catch((error) => {
-        logger(`[notify] 上线通知发送失败: ${error}`)
-      })
-    }
+    await channel.sendOnlineNotification(lastSession?.userId || '', workDir).catch((error) => {
+      logger(`[notify] 上线通知发送失败: ${error}`)
+    })
   }
 }
