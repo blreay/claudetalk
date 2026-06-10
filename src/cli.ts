@@ -478,16 +478,27 @@ async function interactiveSetup(workDir: string, profile?: string): Promise<void
   if (channelType === 'dingtalk') {
     console.log('')
     console.log('📡 Webhook 机器人配置（可选）')
-    console.log('   配置后可通过 HTTP POST 接收自定义机器人 outgoing 回调，并通过 webhook 推送响应')
+    console.log('   可选择监听本地 HTTP webhook、启用 websocket 通道，收到消息后都会拉起 agent 处理')
 
     const existingWebhook = existingProfile?.webhook as WebhookConfig | undefined
-    const defaultAnswer = existingWebhook ? 'y' : 'n'
-    const enableWebhookInput = await promptInput(
-      `是否配置 webhook 机器人？(y/N) [${defaultAnswer}]: `
-    )
-    const enableWebhook = (enableWebhookInput || defaultAnswer).toLowerCase() === 'y'
+    const existingListen = existingWebhook?.listenAddress || ''
+    const existingServerUrl = existingWebhook?.websocketServerUrl || ''
 
-    if (enableWebhook) {
+    let publicUrl = existingWebhook?.publicUrl || ''
+    let listenAddress = ''
+    let websocketServerUrl = ''
+
+    const defaultHttpAnswer = existingListen ? 'y' : 'n'
+    const enableHttpInput = await promptInput(`是否监听本地 HTTP webhook？(y/N) [${defaultHttpAnswer}]: `)
+    const enableHttp = (enableHttpInput || defaultHttpAnswer).toLowerCase() === 'y'
+
+    const defaultWsAnswer = existingServerUrl ? 'y' : 'n'
+    const enableWsInput = await promptInput(`是否启用 websocket 通道？(y/N) [${defaultWsAnswer}]: `)
+    const enableWs = (enableWsInput || defaultWsAnswer).toLowerCase() === 'y'
+
+    if (!enableHttp && !enableWs) {
+      console.log('⚠️  未启用 HTTP webhook 或 websocket 入站通道，本次不保存 webhook 机器人配置')
+    } else {
       // Webhook URLs
       const existingUrls = existingWebhook?.webhookUrls?.join(',') || ''
       const urlsPrompt = existingUrls
@@ -508,31 +519,50 @@ async function interactiveSetup(workDir: string, profile?: string): Promise<void
       const secretInput = await promptInput(secretPrompt)
       const webhookSecret = secretInput || existingSecret
 
-      // Listen Address
-      const existingListen = existingWebhook?.listenAddress || '0.0.0.0:40000'
-      const listenInput = await promptInput(`本机监听地址 [${existingListen}]: `)
-      const listenAddress = listenInput || existingListen
+      if (enableHttp) {
+        const listenDefault = existingListen || '0.0.0.0:40000'
+        const listenInput = await promptInput(`本机监听地址 [${listenDefault}]: `)
+        listenAddress = listenInput || listenDefault
 
-      // Generate public URL
-      console.log('')
-      console.log('🔗 正在生成公网访问地址...')
-      let publicUrl = existingWebhook?.publicUrl || ''
-      try {
-        const port = parseInt(listenAddress.split(':')[1], 10) || 40000
-        const baseUrl = await generatePublicUrl(port)
-        publicUrl = `${baseUrl}/dingtalk-channel/message`
-        console.log(`✅ 公网地址: ${publicUrl}`)
-        console.log('⚠️  请保存此地址，配置钉钉自定义机器人时需要用到！')
-      } catch (err) {
-        console.log(`⚠️  公网地址生成失败: ${err}`)
-        if (publicUrl) {
-          console.log(`   使用上次保存的地址: ${publicUrl}`)
-        } else {
-          console.log('   请稍后手动配置 publicUrl')
+        // Generate public URL
+        console.log('')
+        console.log('🔗 正在生成公网访问地址...')
+        try {
+          const port = parseInt(listenAddress.split(':')[1], 10) || 40000
+          const baseUrl = await generatePublicUrl(port)
+          publicUrl = `${baseUrl}/dingtalk-channel/message`
+          console.log(`✅ 公网地址: ${publicUrl}`)
+          console.log('⚠️  请保存此地址，配置钉钉自定义机器人时需要用到！')
+        } catch (err) {
+          console.log(`⚠️  公网地址生成失败: ${err}`)
+          if (publicUrl) {
+            console.log(`   使用上次保存的地址: ${publicUrl}`)
+          } else {
+            console.log('   请稍后手动配置 publicUrl')
+          }
         }
       }
 
-      webhookConfig = { webhookUrls, webhookSecret, listenAddress, publicUrl }
+      if (enableWs) {
+        while (true) {
+          const serverUrlInput = await promptInput(
+            existingServerUrl
+              ? `websocket 服务地址 [${existingServerUrl}]: `
+              : 'websocket 服务地址 (ws:// 或 wss://): '
+          )
+          websocketServerUrl = serverUrlInput || existingServerUrl
+          if (websocketServerUrl) break
+          console.error('❌ 启用 websocket 通道时，websocket 服务地址不能为空')
+        }
+      }
+
+      webhookConfig = {
+        webhookUrls,
+        webhookSecret,
+        ...(listenAddress ? { listenAddress } : {}),
+        ...(publicUrl ? { publicUrl } : {}),
+        ...(websocketServerUrl ? { websocketServerUrl } : {}),
+      }
     }
   }
 

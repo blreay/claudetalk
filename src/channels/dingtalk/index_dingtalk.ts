@@ -21,6 +21,7 @@ import { registerChannel } from '../registry.js';
 import { createLogger } from '../../core/logger.js';
 import { WebhookClient } from './webhook-client.js'
 import { WebhookServer } from './webhook-server.js'
+import { WebhookWebsocketClient } from './websocket-client.js'
 import type { WebhookConfig } from '../../types.js'
 import { loadConfig } from '../../core/claude.js';
 import {
@@ -91,6 +92,7 @@ export class DingTalkClient implements Channel {
   private readonly HEARTBEAT_TIMEOUT_MS = 3 * 60 * 1000; // 3分钟无帧则认为连接已断
   private webhookClient: WebhookClient | null = null;
   private webhookServer: WebhookServer | null = null;
+  private webhookWsClient: WebhookWebsocketClient | null = null;
 
   constructor(config: DingTalkChannelConfig) {
     this.config = config;
@@ -100,15 +102,27 @@ export class DingTalkClient implements Channel {
     this.logger = createLogger('dingtalk', this.profileName);
     // 启动时立即将自己注册到 chat-members.json 的 _bot_self，确保 knownProfiles 能读到所有已启动的机器人
     this.registerSelfToChatMembers();
-    // Initialize webhook modules if configured
+    // Initialize webhook modules if configured.
+    // webhookClient: outbound response push to DingTalk webhook URLs.
+    // webhookServer: local HTTP receiver for DingTalk outgoing callbacks.
+    // webhookWsClient: optional inbound pull/push channel from the configured websocket service.
     const webhookConfig = (config as unknown as { webhook?: WebhookConfig }).webhook
-    if (webhookConfig?.webhookUrls?.length && webhookConfig?.listenAddress) {
+    if (webhookConfig?.webhookUrls?.length) {
       this.webhookClient = new WebhookClient(
         { webhookUrls: webhookConfig.webhookUrls, webhookSecret: webhookConfig.webhookSecret || '' },
         this.logger
       )
+    }
+    if (webhookConfig?.listenAddress) {
       this.webhookServer = new WebhookServer(
         { listenAddress: webhookConfig.listenAddress },
+        this.logger
+      )
+    }
+    const websocketServerUrl = webhookConfig?.websocketServerUrl
+    if (websocketServerUrl) {
+      this.webhookWsClient = new WebhookWebsocketClient(
+        { serverUrl: websocketServerUrl, profileName: this.profileName },
         this.logger
       )
     }
@@ -370,13 +384,15 @@ export class DingTalkClient implements Channel {
    */
   async start(): Promise<void> {
     const hasStreamCredentials = !!(this.config.clientId && this.config.clientSecret)
-    const hasWebhook = !!this.webhookServer
+    const hasWebhookServer = !!this.webhookServer
+    const hasWebhookWebsocket = !!this.webhookWsClient
 
-    if (!hasStreamCredentials && !hasWebhook) {
+    if (!hasStreamCredentials && !hasWebhookServer && !hasWebhookWebsocket) {
       throw new Error(
         '钉钉 Channel 至少需要配置以下其中一项:\n' +
         '  1. Stream 机器人: DINGTALK_CLIENT_ID + DINGTALK_CLIENT_SECRET\n' +
-        '  2. Webhook 机器人: webhook.webhookUrls + webhook.listenAddress'
+        '  2. Webhook HTTP 机器人: webhook.webhookUrls + webhook.listenAddress\n' +
+        '  3. Webhook WebSocket 机器人: webhook.webhookUrls + webhook.websocketServerUrl'
       );
     }
 
@@ -392,6 +408,21 @@ export class DingTalkClient implements Channel {
         return Promise.resolve()
       })
       await this.webhookServer.start()
+    }
+
+    // Start optional webhook websocket. A websocket failure must not block HTTP webhook or Stream startup.
+    if (this.webhookWsClient) {
+      this.webhookWsClient.onMessage((context, message) => {
+        if (this.channelMessageHandler) {
+          return this.channelMessageHandler(context, message)
+        }
+        return Promise.resolve()
+      })
+      try {
+        await this.webhookWsClient.start()
+      } catch (error) {
+        this.logger(`[WebhookWebsocketClient] Start failed, continuing without websocket channel: ${error}`)
+      }
     }
 
     if (hasStreamCredentials) {
@@ -422,6 +453,9 @@ export class DingTalkClient implements Channel {
     }
     if (this.webhookServer) {
       this.webhookServer.stop()
+    }
+    if (this.webhookWsClient) {
+      this.webhookWsClient.stop()
     }
     this.logger('DingTalk Stream stopped');
   }
