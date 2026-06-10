@@ -401,8 +401,10 @@ export interface WebhookConfig {
   webhookUrls: string[]
   /** 钉钉机器人加签密钥 */
   webhookSecret: string
+  /** 接收服务端 push / pull 消息的 WebSocket 服务地址 */
+  websocketServerUrl?: string
   /** 本机 HTTP server 监听地址，格式 IP:端口 */
-  listenAddress: string
+  listenAddress?: string
   /** 自动生成的公网访问 URL */
   publicUrl?: string
 }
